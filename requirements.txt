@@ -1,0 +1,13 @@
+# The Dependencies needed for this tool are the following
+
+0. Python 3.10
+1. Moviepy
+2. FFmpeg
+3. Whisper + yt-dlp + pytorch
+
+conda install -c conda-forge moviepy
+conda install -c conda-forge ffmpeg
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install openai-whisper yt-dlp
+pip install torch torchvision torchaudio
+
