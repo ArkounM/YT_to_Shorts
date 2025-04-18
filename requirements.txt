@@ -1,13 +1,10 @@
-# The Dependencies needed for this tool are the following
+## Prerequisites
 
-0. Python 3.10
-1. Moviepy
-2. FFmpeg
-3. Whisper + yt-dlp + pytorch
+```bash
+pip install opencv-python numpy moviepy whisper textwrap3 Pillow
+```
 
-conda install -c conda-forge moviepy
-conda install -c conda-forge ffmpeg
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip install openai-whisper yt-dlp
-pip install torch torchvision torchaudio
-
+You'll also need FFmpeg installed on your system:
+- **Windows**: Download from [FFmpeg website](https://ffmpeg.org/download.html) and add to PATH
+- **Linux**: `sudo apt-get install ffmpeg`
+- **macOS**: `brew install ffmpeg`

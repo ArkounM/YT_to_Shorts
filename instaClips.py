@@ -15,7 +15,7 @@ def extract_audio(video_path, output_path="temp_audio.wav"):
     subprocess.call(command, shell=True)
     return output_path
 
-def transcribe_audio(audio_path, keyword="Day", min_duration=60, max_duration=60):
+def transcribe_audio(video_path, audio_path, keyword="Day", min_duration=45, max_duration=60):
     """Transcribe audio using Whisper and find segments with keyword"""
     print("Loading Whisper model...")
     model = whisper.load_model("base")
@@ -36,9 +36,9 @@ def transcribe_audio(audio_path, keyword="Day", min_duration=60, max_duration=60
                 start_time = word["start"]
                 end_time = word["end"]
                 
-                # Calculate clip duration to be between 60-60 seconds
+                # Calculate clip duration to be between min_duration and max_duration seconds
                 # Center the clip around the keyword if possible
-                half_duration = min_duration / 2  # Half of minimum duration
+                half_duration = min_duration / 2
                 
                 # Try to center the clip around the keyword
                 context_start = max(0, start_time - half_duration)
@@ -58,9 +58,78 @@ def transcribe_audio(audio_path, keyword="Day", min_duration=60, max_duration=60
                         if context_start <= w["start"] <= context_end:
                             clip_words.append({
                                 "text": w["word"],
-                                "start": w["start"],
-                                "end": w["end"]
+                                "start": w["start"] - context_start,  # Relative to clip start
+                                "end": w["end"] - context_start       # Relative to clip start
                             })
+                
+                # Now calculate text lines and timing for captions
+                # Get video properties to determine text width
+                cap = cv2.VideoCapture(video_path)
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                width = 1080  # Instagram width
+                
+                # Sample text to determine character width
+                sample_text = "Sample Text for Calculation"
+                font_size = 60  # Default font size
+                try:
+                    font = ImageFont.truetype("arial.ttf", font_size)
+                except:
+                    font = ImageFont.load_default()
+                
+                # Create a temporary image to measure text size
+                temp_img = Image.new('RGB', (1, 1))
+                draw = ImageDraw.Draw(temp_img)
+                
+                # Calculate average char width
+                bbox = draw.textbbox((0, 0), sample_text, font=font)
+                sample_width = bbox[2] - bbox[0]
+                char_width = sample_width / len(sample_text)
+                
+                # Calculate usable width (80% of screen width)
+                usable_width = int(width * 0.8)
+                chars_per_line = int(usable_width / char_width)
+                
+                # Create text lines based on timing and words
+                text_lines = []
+                current_line = ""
+                line_start_time = None
+                
+                for word in clip_words:
+                    word_text = word["text"].strip()
+                    if not word_text:
+                        continue
+                        
+                    # Start a new line if needed
+                    if line_start_time is None:
+                        line_start_time = word["start"]
+                    
+                    # Check if adding this word would exceed line length
+                    test_line = current_line + " " + word_text if current_line else word_text
+                    if len(test_line) > chars_per_line:
+                        # Add current line to text_lines
+                        if current_line:
+                            text_lines.append({
+                                "text": current_line,
+                                "start": line_start_time,
+                                "end": word["start"]
+                            })
+                        
+                        # Start new line with current word
+                        current_line = word_text
+                        line_start_time = word["start"]
+                    else:
+                        # Add word to current line
+                        current_line = test_line
+                
+                # Add the last line if there is one
+                if current_line:
+                    text_lines.append({
+                        "text": current_line,
+                        "start": line_start_time,
+                        "end": clip_words[-1]["end"] if clip_words else context_end - context_start
+                    })
+                
+                cap.release()
                 
                 segments.append({
                     "start": context_start,
@@ -69,48 +138,12 @@ def transcribe_audio(audio_path, keyword="Day", min_duration=60, max_duration=60
                     "keyword": keyword,
                     "keyword_start": start_time,
                     "keyword_end": end_time,
-                    "words": clip_words
+                    "words": clip_words,
+                    "text_lines": text_lines,
+                    "fps": fps
                 })
                 
     return segments
-
-def get_sentence_at_time(segment, current_time):
-    """Get the current complete sentence based on time"""
-    # Group words into sentences (simple approach using basic punctuation)
-    sentences = []
-    current_sentence = []
-    
-    for word in segment["words"]:
-        current_sentence.append(word)
-        if word["text"].strip().endswith(('.', '!', '?')):
-            sentences.append(current_sentence)
-            current_sentence = []
-    
-    # Add any remaining words as a sentence
-    if current_sentence:
-        sentences.append(current_sentence)
-    
-    # Find which sentence we're currently in
-    current_sentence = []
-    for sentence in sentences:
-        sentence_start = sentence[0]["start"]
-        sentence_end = sentence[-1]["end"]
-        if sentence_start <= current_time <= sentence_end:
-            current_sentence = sentence
-            break
-    
-    # If no current sentence found, use the last sentence before current_time
-    if not current_sentence:
-        for sentence in reversed(sentences):
-            if sentence[-1]["end"] <= current_time:
-                current_sentence = sentence
-                break
-        if not current_sentence and sentences:
-            current_sentence = sentences[0]
-    
-    # Convert sentence to text
-    text = " ".join(word["text"] for word in current_sentence)
-    return text.strip()
 
 def cv2_to_pil(cv2_img):
     """Convert CV2 image (BGR) to PIL image (RGB)"""
@@ -120,12 +153,31 @@ def pil_to_cv2(pil_img):
     """Convert PIL image (RGB) to CV2 image (BGR)"""
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
+def draw_rounded_rectangle(draw, bbox, radius, fill):
+    """Draw a rounded rectangle"""
+    x1, y1, x2, y2 = bbox
+    draw.rectangle((x1 + radius, y1, x2 - radius, y2), fill=fill)
+    draw.rectangle((x1, y1 + radius, x2, y2 - radius), fill=fill)
+    # Draw four corners
+    draw.pieslice((x1, y1, x1 + radius * 2, y1 + radius * 2), 180, 270, fill=fill)
+    draw.pieslice((x2 - radius * 2, y1, x2, y1 + radius * 2), 270, 360, fill=fill)
+    draw.pieslice((x1, y2 - radius * 2, x1 + radius * 2, y2), 90, 180, fill=fill)
+    draw.pieslice((x2 - radius * 2, y2 - radius * 2, x2, y2), 0, 90, fill=fill)
+
 def create_instagram_clip_opencv(video_path, segment, output_path, keyword="Day", captions=False):
     """Create Instagram clip using OpenCV directly"""
     print(f"Processing clip from {segment['start']:.2f} to {segment['end']:.2f}")
     
-    # Open the video
-    cap = cv2.VideoCapture(video_path)
+    # Instead of trying to seek with OpenCV, extract the exact video segment with FFmpeg first
+    temp_video_path = f"{output_path}_segment.mp4"
+    clip_duration = segment["end"] - segment["start"]
+    extract_cmd = f"ffmpeg -ss {segment['start']:.6f} -i {video_path} -t {clip_duration:.6f} -c:v copy -c:a copy {temp_video_path} -y"
+    
+    print(f"Extracting exact segment with FFmpeg: {extract_cmd}")
+    subprocess.call(extract_cmd, shell=True)
+    
+    # Now open the extracted segment, which will start at time 0
+    cap = cv2.VideoCapture(temp_video_path)
     
     # Get video properties
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -134,18 +186,6 @@ def create_instagram_clip_opencv(video_path, segment, output_path, keyword="Day"
     # Set output dimensions (9:16 aspect ratio)
     width = 1080    
     height = 1920
-    
-    # Calculate start and end frames
-    start_frame = int(segment["start"] * fps)
-    end_frame = int(segment["end"] * fps)
-    
-    # Ensure we have enough frames for the desired duration
-    duration_frames = end_frame - start_frame
-    min_frames = int(60 * fps)  # 60 seconds minimum
-    if duration_frames < min_frames:
-        end_frame = start_frame + min_frames
-        # Update segment end time for audio extraction
-        segment["end"] = segment["start"] + (min_frames / fps)
     
     # Set up video writer - using H.264 codec
     fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec
@@ -161,29 +201,14 @@ def create_instagram_clip_opencv(video_path, segment, output_path, keyword="Day"
             print("Could not open video writer with either codec. Please check your OpenCV installation.")
             return None
     
-    # OpenCV font constants
-    font_to_use = cv2.FONT_HERSHEY_TRIPLEX  # This is a bolder, clearer font
+    print(f"Processing {total_frames} frames at {fps} fps")
+    print(f"Expected duration: {total_frames / fps:.2f} seconds")
     
-    # Print some diagnostic info
-    print(f"Processing frames {start_frame} to {end_frame}")
-    print(f"Total duration: {(end_frame - start_frame) / fps:.2f} seconds")
-    
-    # Extract the segment from the video
-    precise_start_time = segment["start"]
-    cap.set(cv2.CAP_PROP_POS_MSEC, precise_start_time * 1000)
-    
-    # Verify we're at the correct position
-    actual_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
-    actual_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
-    print(f"Requested start time: {precise_start_time:.3f}, Actual time: {actual_time:.3f}")
-    
-    current_frame = start_frame
     frames_processed = 0
     
-    while current_frame <= end_frame and current_frame < total_frames:
+    while frames_processed < total_frames:
         ret, frame = cap.read()
         if not ret:
-            print(f"Failed to read frame at position {current_frame}")
             break
         
         frames_processed += 1
@@ -213,7 +238,7 @@ def create_instagram_clip_opencv(video_path, segment, output_path, keyword="Day"
         # Apply blur to background
         blurred_bg = cv2.GaussianBlur(bg_resized, (151, 151), 0)
         
-        # Calculate video placement - now using 60% of screen height
+        # Calculate video placement - using 70% of screen height
         target_height = int(height * 0.7)
         scale_factor = target_height / orig_height
         target_width = int(orig_width * scale_factor)
@@ -227,9 +252,9 @@ def create_instagram_clip_opencv(video_path, segment, output_path, keyword="Day"
         # Resize original frame to target size
         orig_resized = cv2.resize(frame, (target_width, target_height))
         
-        # Center the video horizontally and position at 20% from top
+        # Center the video horizontally and position at center
         x_offset = (width - target_width) // 2
-        y_offset = int(height - target_height) // 2  # Center
+        y_offset = int(height - target_height) // 2
         
         # Create final result with blurred background
         result = blurred_bg.copy()
@@ -241,52 +266,62 @@ def create_instagram_clip_opencv(video_path, segment, output_path, keyword="Day"
             pil_img = cv2_to_pil(result)
             draw = ImageDraw.Draw(pil_img)
             
-            # Load a nicer font (you'll need to provide the path to your font file)
             try:
-                font = ImageFont.truetype("arial.ttf", 60)  # Adjust size as needed
+                # Larger font size for better readability
+                font = ImageFont.truetype("arial.ttf", 60)
             except:
                 font = ImageFont.load_default()
             
-            # Get current time and caption text
-            current_time = segment["start"] + (frames_processed / fps)
-            caption_text = get_sentence_at_time(segment, current_time)
+            # Get current time relative to clip start
+            current_time = (frames_processed / fps)
             
-            # Wrap text
-            wrapped_text = textwrap.fill(caption_text, width=40)
+            # Find the text line for the current time
+            current_line = None
+            for line in segment["text_lines"]:
+                if line["start"] <= current_time <= line["end"]:
+                    current_line = line["text"]
+                    break
             
-            # Calculate text size and position
-            bbox = draw.textbbox((0, 0), wrapped_text, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
+            # If no exact match, use the last line that started before current time
+            if not current_line and segment["text_lines"]:
+                candidates = [line for line in segment["text_lines"] if line["start"] <= current_time]
+                if candidates:
+                    current_line = max(candidates, key=lambda x: x["start"])["text"]
             
-            # Position text below video
-            text_x = (width - text_width) // 2
-            text_y = y_offset + target_height + 40
-            
-            # Draw semi-transparent background
-            padding = 40
-            bg_bbox = (
-                text_x - padding,
-                text_y - padding,
-                text_x + text_width + padding,
-                text_y + text_height + padding
-            )
-            draw.rectangle(bg_bbox, fill=(0, 0, 0, 180))
-            
-            # Draw text
-            draw.text(
-                (text_x, text_y),
-                wrapped_text,
-                font=font,
-                fill=(255, 255, 255)
-            )
+            if current_line:  # Only proceed if we have text to display
+                # Calculate text size
+                bbox = draw.textbbox((0, 0), current_line, font=font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+                
+                # Position text below video
+                text_x = (width - text_width) // 2
+                text_y = y_offset + target_height + 60  # Increased spacing
+                
+                # Draw rounded rectangle background
+                padding = 40
+                corner_radius = 30  # Adjust for rounder corners
+                bg_bbox = (
+                    text_x - padding,
+                    text_y - padding,
+                    text_x + text_width + padding,
+                    text_y + text_height + padding
+                )
+                draw_rounded_rectangle(draw, bg_bbox, corner_radius, fill=(255, 255, 255, 230))
+                
+                # Draw text in black
+                draw.text(
+                    (text_x, text_y),
+                    current_line,
+                    font=font,
+                    fill=(0, 0, 0)  # Black text
+                )
             
             # Convert back to CV2 for video writing
             result = pil_to_cv2(pil_img)
 
         # Write the frame
         out.write(result)
-        current_frame += 1
     
     # Release resources
     cap.release()
@@ -295,26 +330,23 @@ def create_instagram_clip_opencv(video_path, segment, output_path, keyword="Day"
     print(f"Processed {frames_processed} frames")
     print(f"Expected duration: {frames_processed / fps:.2f} seconds")
     
-    # Now add the audio using FFmpeg
-    clip_duration = segment["end"] - segment["start"]
-    print(f"Using FFmpeg to add audio from {segment['start']:.2f} for {clip_duration:.2f} seconds")
-    
-    audio_segment = f"-ss {segment['start']:.6f} -t {clip_duration:.6f}"
-    command = f"ffmpeg -i {output_path}_temp.mp4 -i {video_path} {audio_segment} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {output_path} -y"
-    print(f"Running FFmpeg command: {command}")
+    # Now combine our processed video with the audio from the original video segment
+    command = f"ffmpeg -i {output_path}_temp.mp4 -i {temp_video_path} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {output_path} -y"
+    print(f"Adding audio: {command}")
     subprocess.call(command, shell=True)
     
     # Check if the output file was created successfully
     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
         print(f"Successfully created clip at {output_path}")
-        # Remove temporary file
+        # Remove temporary files
         os.remove(f"{output_path}_temp.mp4")
+        os.remove(temp_video_path)
         return output_path
     else:
         print(f"Failed to create clip at {output_path}")
         return None
 
-def main(video_path, output_dir="instagram_clips", keyword="Day", min_duration=60, max_duration=60, captions=False):
+def main(video_path, output_dir="instagram_clips", keyword="Day", min_duration=45, max_duration=60, captions=False):
     """Main function to process video and create Instagram clips"""
     # Create output directory if it doesn't exist
     if not os.path.exists(output_dir):
@@ -324,7 +356,7 @@ def main(video_path, output_dir="instagram_clips", keyword="Day", min_duration=6
     audio_path = extract_audio(video_path)
     
     # Transcribe audio and find segments with keyword
-    segments = transcribe_audio(audio_path, keyword, min_duration, max_duration)
+    segments = transcribe_audio(video_path, audio_path, keyword, min_duration, max_duration)
     
     print(f"Found {len(segments)} segments with keyword '{keyword}'")
     
@@ -357,7 +389,7 @@ if __name__ == "__main__":
     parser.add_argument("video_path", help="Path to the input video file")
     parser.add_argument("--output-dir", default="instagram_clips", help="Directory to save output clips")
     parser.add_argument("--keyword", default="Day", help="Keyword to detect for creating clips")
-    parser.add_argument("--min-duration", type=int, default=60, help="Minimum clip duration in seconds")
+    parser.add_argument("--min-duration", type=int, default=45, help="Minimum clip duration in seconds")
     parser.add_argument("--max-duration", type=int, default=60, help="Maximum clip duration in seconds")
     parser.add_argument("--captions", action="store_true", help="Enable captions in the output clips")
     
