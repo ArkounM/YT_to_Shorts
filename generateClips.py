@@ -298,42 +298,91 @@ def review_clips(clips, transcription_segments):
     print("\n=== Clips to Review ===")
     for i, clip in enumerate(clips):
         print(f"\nClip {i+1}:")
-        print(f"  Time: {clip['start']} to {clip['end']}")
-        print(f"  Reason: {clip['reason']}")
-        print(f"  Caption: {clip['caption']}")
         
-        # Display transcript for this time period
-        start_time = parse_timestamp(clip["start"])
-        end_time = parse_timestamp(clip["end"])
-        
-        print("\n  Transcript:")
-        relevant_text = []
-        for segment in transcription_segments:
-            if segment["end"] >= start_time and segment["start"] <= end_time:
-                relevant_text.append(segment["text"])
-        
-        transcript = " ".join(relevant_text)
-        wrapped_text = textwrap.fill(transcript, width=70)
-        for line in wrapped_text.split("\n"):
-            print(f"    {line}")
-        
-        # Ask for user action
-        while True:
-            action = input("\nActions: [a]pprove, [e]dit caption, [t]rim times, [s]kip): ").lower()
+        while True:  # Continue until user decides to approve or skip
+            # Display current clip info
+            print(f"  Time: {clip['start']} to {clip['end']}")
+            print(f"  Reason: {clip['reason']}")
+            print(f"  Caption: {clip['caption']}")
+            
+            # Display transcript for this time period
+            start_time = parse_timestamp(clip["start"])
+            end_time = parse_timestamp(clip["end"])
+            
+            print("\n  Transcript:")
+            relevant_segments = []
+            for j, segment in enumerate(transcription_segments):
+                if segment["end"] >= start_time and segment["start"] <= end_time:
+                    relevant_segments.append((j, segment))
+            
+            # Display segments with index for reference
+            for seg_idx, (trans_idx, segment) in enumerate(relevant_segments):
+                print(f"    [{seg_idx}] {segment['text']}")
+            
+            # Ask for user action
+            action = input("\nActions: [a]pprove, [e]dit transcript, [t]rim times, [s]kip, [n]ext clip: ").lower()
             
             if action == 'a':
+                # Add a second buffer to both start and end time
+                clip = add_time_buffer(clip, buffer_seconds=1)
                 approved_clips.append(clip)
                 print("Clip approved!")
                 break
                 
             elif action == 'e':
-                new_caption = input(f"Enter new caption (current: {clip['caption']}): ")
-                if new_caption:
-                    clip["caption"] = new_caption
-                    print("Caption updated.")
-                approved_clips.append(clip)
-                break
-                
+                # Edit transcript
+                if relevant_segments:
+                    seg_to_edit = input("Enter segment number to edit [0, 1, ...] or 'all' for all segments: ")
+                    
+                    if seg_to_edit.lower() == 'all':
+                        # Edit all segments
+                        for seg_idx, (trans_idx, segment) in enumerate(relevant_segments):
+                            current_text = segment['text']
+                            print(f"\nEditing segment [{seg_idx}]: {current_text}")
+                            new_text = input("Enter corrected text (leave empty to keep unchanged): ")
+                            
+                            if new_text:
+                                # Update in transcription_segments
+                                transcription_segments[trans_idx]['text'] = new_text
+                                print(f"Updated segment [{seg_idx}]")
+                                
+                                # Update text_lines as well if they exist
+                                if 'text_lines' in transcription_segments[trans_idx]:
+                                    # Create a simple one-line text_line
+                                    transcription_segments[trans_idx]['text_lines'] = [{
+                                        "text": new_text,
+                                        "start": transcription_segments[trans_idx]["start"],
+                                        "end": transcription_segments[trans_idx]["end"]
+                                    }]
+                    else:
+                        try:
+                            seg_idx = int(seg_to_edit)
+                            if 0 <= seg_idx < len(relevant_segments):
+                                trans_idx, segment = relevant_segments[seg_idx]
+                                current_text = segment['text']
+                                print(f"Current text: {current_text}")
+                                new_text = input("Enter corrected text: ")
+                                
+                                if new_text:
+                                    # Update in transcription_segments
+                                    transcription_segments[trans_idx]['text'] = new_text
+                                    print(f"Updated segment [{seg_idx}]")
+                                    
+                                    # Update text_lines as well if they exist
+                                    if 'text_lines' in transcription_segments[trans_idx]:
+                                        # Create a simple one-line text_line
+                                        transcription_segments[trans_idx]['text_lines'] = [{
+                                            "text": new_text,
+                                            "start": transcription_segments[trans_idx]["start"],
+                                            "end": transcription_segments[trans_idx]["end"]
+                                        }]
+                            else:
+                                print("Invalid segment number.")
+                        except ValueError:
+                            print("Please enter a valid segment number or 'all'.")
+                else:
+                    print("No transcript segments available for this clip.")
+                    
             elif action == 't':
                 new_start = input(f"New start time (current: {clip['start']}, format mm:ss): ")
                 if new_start:
@@ -344,17 +393,46 @@ def review_clips(clips, transcription_segments):
                     clip["end"] = new_end
                 
                 print(f"Clip timing updated: {clip['start']} to {clip['end']}")
-                approved_clips.append(clip)
-                break
                 
             elif action == 's':
                 print("Clip skipped.")
                 break
                 
+            elif action == 'n':
+                # Add a second buffer to both start and end time
+                clip = add_time_buffer(clip, buffer_seconds=1)
+                approved_clips.append(clip)
+                print("Moving to next clip...")
+                break
+                
             else:
                 print("Invalid action. Please try again.")
     
-    return approved_clips
+    return approved_clips, transcription_segments
+
+
+def add_time_buffer(clip, buffer_seconds=1):
+    """Add buffer time to clip start and end times"""
+    # Parse current times
+    start_time = parse_timestamp(clip["start"])
+    end_time = parse_timestamp(clip["end"])
+    
+    # Add buffer (subtract from start, add to end)
+    new_start_time = max(0, start_time - buffer_seconds)
+    new_end_time = end_time + buffer_seconds
+    
+    # Format back to mm:ss
+    clip["start"] = format_time(new_start_time)
+    clip["end"] = format_time(new_end_time)
+    
+    return clip
+
+
+def format_time(seconds):
+    """Format seconds to mm:ss format"""
+    minutes = int(seconds // 60)
+    seconds = int(seconds % 60)
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 def cv2_to_pil(cv2_img):
@@ -380,7 +458,7 @@ def draw_rounded_rectangle(draw, bbox, radius, fill):
 
 
 def create_clip(video_path, clip, output_path, captions=True):
-    """Create a video clip with optional captions using techniques from instaClips.py"""
+    """Create a video clip with all caps captions and word-by-word highlighting with proper line breaking"""
     # Convert timestamps to seconds
     start_time = parse_timestamp(clip["start"])
     end_time = parse_timestamp(clip["end"])
@@ -418,36 +496,102 @@ def create_clip(video_path, clip, output_path, captions=True):
             print("Could not open video writer with either codec. Check your OpenCV installation.")
             return None
     
-    # Extract text lines from segments for captions
+    # Process word timings and organize them into lines
+    word_timings = []
     text_lines = []
     if captions:
-        # Find segments that overlap with this clip
+        # First collect all words with their timings
         for segment in clip.get("segments", []):
             segment_start = segment.get("start", 0)
             segment_end = segment.get("end", 0)
             
             # Check if segment overlaps with clip
             if segment_end >= start_time and segment_start <= end_time:
-                # Adjust text line timing relative to clip start
-                for line in segment.get("text_lines", []):
-                    text_lines.append({
-                        "text": line["text"],
-                        "start": max(0, line["start"] - start_time),
-                        "end": min(duration, line["end"] - start_time)
-                    })
+                # Process words in this segment
+                for word in segment.get("words", []):
+                    # Only add words that will be in the clip timeframe
+                    if word["end"] >= start_time and word["start"] <= end_time:
+                        word_timings.append({
+                            "text": word["word"],  #.strip().upper(),  # Convert to uppercase
+                            "start": max(0, word["start"] - start_time),
+                            "end": min(duration, word["end"] - start_time)
+                        })
         
-        # If no segments provided, use the caption as a static text
-        if not text_lines and clip.get("caption"):
-            text_lines = [{
-                "text": clip["caption"],
+        # If no words found, use entire caption as fallback
+        if not word_timings and clip.get("caption"):
+            word_timings = [{
+                "text": clip["caption"], #.upper(),  # Convert to uppercase
                 "start": 0,
                 "end": duration
             }]
+            
+        # Now organize words into lines that fit on screen
+        # Create a temporary PIL image to measure text size
+        try:
+            font = ImageFont.truetype("arial.ttf", 60)
+        except:
+            font = ImageFont.load_default()
+            
+        temp_img = Image.new('RGB', (1, 1))
+        draw = ImageDraw.Draw(temp_img)
+        
+        # Calculate usable width (80% of screen width)
+        usable_width = int(target_width * 0.8)
+        
+        # Group words into lines
+        current_line = []
+        current_line_text = ""
+        line_start_time = None
+        
+        for word in word_timings:
+            word_text = word["text"]
+            
+            # Initialize line start time if needed
+            if not current_line:
+                line_start_time = word["start"]
+            
+            # Test if adding this word exceeds the line width
+            test_line = current_line_text + (" " if current_line_text else "") + word_text
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            text_width = bbox[2] - bbox[0]
+            
+            if text_width > usable_width and current_line:
+                # Line would be too long, save current line and start a new one
+                line_words = current_line.copy()
+                line_end_time = line_words[-1]["end"]
+                
+                text_lines.append({
+                    "words": line_words,
+                    "text": current_line_text,
+                    "start": line_start_time,
+                    "end": line_end_time
+                })
+                
+                # Start new line with current word
+                current_line = [word]
+                current_line_text = word_text
+                line_start_time = word["start"]
+            else:
+                # Add word to current line
+                current_line.append(word)
+                current_line_text = test_line
+        
+        # Add the last line if it has content
+        if current_line:
+            text_lines.append({
+                "words": current_line,
+                "text": current_line_text,
+                "start": line_start_time,
+                "end": current_line[-1]["end"]
+            })
     
     print(f"Processing {total_frames} frames at {fps} fps")
     
     # Process frame by frame
     frames_processed = 0
+    last_text_end_time = 0  # Track when the last text segment ended
+    silence_duration = 2.0  # Seconds of silence before hiding captions
+    
     while frames_processed < total_frames:
         ret, frame = cap.read()
         if not ret:
@@ -463,7 +607,7 @@ def create_clip(video_path, clip, output_path, captions=True):
         # Create a 9:16 canvas
         result = np.zeros((target_height, target_width, 3), dtype=np.uint8)
         
-        # Create blurred background (similar to instaClips.py)
+        # Create blurred background
         bg_scale = target_height / orig_height
         bg_width = int(orig_width * bg_scale)
         
@@ -482,7 +626,7 @@ def create_clip(video_path, clip, output_path, captions=True):
         # Apply blur to background
         blurred_bg = cv2.GaussianBlur(bg_resized, (151, 151), 0)
         
-        # Calculate video placement - using 70% of screen height as in instaClips.py
+        # Calculate video placement - using 70% of screen height
         video_height = int(target_height * 0.7)
         scale_factor = video_height / orig_height
         video_width = int(orig_width * scale_factor)
@@ -506,65 +650,122 @@ def create_clip(video_path, clip, output_path, captions=True):
         
         # Only add captions if enabled
         if captions:
-            # Convert CV2 image to PIL for text rendering
-            pil_img = cv2_to_pil(result)
-            draw = ImageDraw.Draw(pil_img)
-            
-            try:
-                # Larger font size for better readability
-                font = ImageFont.truetype("arial.ttf", 60)
-            except:
-                font = ImageFont.load_default()
-            
-            # Find the text line for the current time
-            current_line = None
+            # Find current active line(s)
+            active_lines = []
             for line in text_lines:
+                # Line is active if it overlaps with the current time
                 if line["start"] <= current_time <= line["end"]:
-                    current_line = line["text"]
-                    break
+                    active_lines.append(line)
             
-            # If no exact match, use the last line that started before current time
-            if not current_line and text_lines:
-                candidates = [line for line in text_lines if line["start"] <= current_time]
-                if candidates:
-                    current_line = max(candidates, key=lambda x: x["start"])["text"]
-            
-            # If no text lines available, use clip caption
-            if not current_line and clip.get("caption"):
-                current_line = clip["caption"]
-            
-            if current_line:  # Only proceed if we have text to display
-                # Calculate text size
-                bbox = draw.textbbox((0, 0), current_line, font=font)
-                text_width = bbox[2] - bbox[0]
-                text_height = bbox[3] - bbox[1]
+            # Update last text end time if there are active lines
+            if active_lines:
+                last_text_end_time = max([line["end"] for line in active_lines])
+                show_caption = True
+            elif current_time - last_text_end_time >= silence_duration:
+                show_caption = False
+            else:
+                show_caption = True  # Still show caption during brief pauses
                 
-                # Position text below video
-                text_x = (target_width - text_width) // 2
-                text_y = y_offset + video_height + 60  # Increased spacing
-                
-                # Draw rounded rectangle background
-                padding = 40
-                corner_radius = 30  # Adjust for rounder corners
-                bg_bbox = (
-                    text_x - padding,
-                    text_y - padding,
-                    text_x + text_width + padding,
-                    text_y + text_height + padding
-                )
-                draw_rounded_rectangle(draw, bg_bbox, corner_radius, fill=(255, 255, 255, 230))
-                
-                # Draw text in black
-                draw.text(
-                    (text_x, text_y),
-                    current_line,
-                    font=font,
-                    fill=(0, 0, 0)  # Black text
-                )
+                # Find the most recent line that's finished
+                recent_lines = [line for line in text_lines if line["end"] <= current_time]
+                if recent_lines:
+                    most_recent = max(recent_lines, key=lambda x: x["end"])
+                    if current_time - most_recent["end"] < silence_duration:
+                        active_lines = [most_recent]
             
-            # Convert back to CV2 for video writing
-            result = pil_to_cv2(pil_img)
-            
+            # Only proceed if we have lines to display and should show captions
+            if active_lines and show_caption:
+                # Convert CV2 image to PIL for text rendering
+                pil_img = cv2_to_pil(result)
+                draw = ImageDraw.Draw(pil_img)
+                
+                try:
+                    font = ImageFont.truetype("arial.ttf", 60)
+                except:
+                    font = ImageFont.load_default()
+                
+                # Display each active line
+                for i, line in enumerate(active_lines):
+                    line_text = line["text"]
+                    line_words = line["words"]
+                    
+                    # Calculate text size for positioning
+                    bbox = draw.textbbox((0, 0), line_text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+                    
+                    # Position text below video with spacing between multiple lines
+                    center_x = target_width // 2
+                    text_y = y_offset + video_height + 60 + (i * (text_height + 30))  # Add vertical spacing between lines
+                    
+                    # Calculate the starting position for text
+                    text_x = center_x - (text_width // 2)
+                    
+                    # First, determine dimensions of each word for highlighting
+                    word_positions = []
+                    current_x = text_x
+                    
+                    for word in line_words:
+                        word_bbox = draw.textbbox((0, 0), word["text"], font=font)
+                        word_width = word_bbox[2] - word_bbox[0]
+                        
+                        # Add a little padding between words
+                        if word_positions:  # Not the first word
+                            space_bbox = draw.textbbox((0, 0), " ", font=font)
+                            space_width = space_bbox[2] - space_bbox[0]
+                            current_x += space_width
+                        
+                        word_positions.append({
+                            "text": word["text"],
+                            "x": current_x,
+                            "width": word_width,
+                            "active": word["start"] <= current_time <= word["end"]
+                        })
+                        
+                        current_x += word_width
+                    
+                    # Draw background for entire text area (semi-transparent white)
+                    bg_padding = 40
+                    corner_radius = 30
+
+                    # Calculate centered background position
+                    bg_width = text_width + (bg_padding * 2)
+                    bg_x_start = center_x - (bg_width / 2)
+                    bg_x_end = center_x + (bg_width / 2)
+
+                    caption_bg_bbox = (
+                        bg_x_start,
+                        text_y - bg_padding,
+                        bg_x_end,
+                        text_y + text_height + bg_padding
+                    )
+                    draw_rounded_rectangle(draw, caption_bg_bbox, corner_radius, fill=(255, 255, 255, 230))
+                    
+                    # Draw highlighted background for active words
+                    for word_pos in word_positions:
+                        if word_pos["active"]:
+                            # Draw yellow highlight behind active word
+                            highlight_padding = 20
+                            highlight_bbox = (
+                                word_pos["x"] - highlight_padding // 2,
+                                text_y - highlight_padding // 2,
+                                word_pos["x"] + word_pos["width"] + highlight_padding // 2,
+                                text_y + text_height + highlight_padding // 2.2
+                            )
+                            draw_rounded_rectangle(draw, highlight_bbox, 15, fill=(255, 226, 165, 220))  # Yellow highlight
+                    
+                    # Draw all words in black
+                    for word_pos in word_positions:
+                        draw.text(
+                            (word_pos["x"], text_y),
+                            word_pos["text"],
+                            font=font,
+                            fill=(0, 0, 0)  # Black text
+                        )
+                
+                # Convert back to CV2 for video writing
+                result = pil_to_cv2(pil_img)
+                
         # Write the frame
         out.write(result)
     
@@ -593,8 +794,6 @@ def create_clip(video_path, clip, output_path, captions=True):
     else:
         print(f"Failed to create clip at {final_output}")
         return None
-
-
 def main():
     parser = argparse.ArgumentParser(description="Create video clips using AI to find interesting moments")
     parser.add_argument("video_path", help="Path to the input video file")
@@ -665,7 +864,12 @@ def main():
     # Step 4: Review clips if requested
     if not args.no_review:
         print("\nReviewing clips...")
-        approved_clips = review_clips(clips, transcription_segments)
+        approved_clips, updated_transcription = review_clips(clips, transcription_segments)
+        
+        # Save updated transcription
+        with open(transcription_path, "w") as f:
+            json.dump(updated_transcription, f, indent=2)
+        print(f"Updated transcription saved to {transcription_path}")
     else:
         approved_clips = clips
     
@@ -679,6 +883,15 @@ def main():
         print(f"\nCreating clip {i+1}/{len(approved_clips)}...")
         output_path = os.path.join(args.output_dir, f"clip_{i+1}.mp4")
         try:
+            # Make sure to update segments in each clip with the latest transcription
+            if not args.no_review:
+                clip_start = parse_timestamp(clip["start"])
+                clip_end = parse_timestamp(clip["end"])
+                clip["segments"] = []
+                for segment in updated_transcription:
+                    if segment["end"] >= clip_start and segment["start"] <= clip_end:
+                        clip["segments"].append(segment)
+                
             clip_path = create_clip(args.video_path, clip, output_path, captions=args.captions)
             if clip_path:
                 created_clips.append(clip_path)
