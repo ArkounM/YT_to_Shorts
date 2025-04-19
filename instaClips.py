@@ -8,6 +8,7 @@ import whisper
 import textwrap
 import time
 from PIL import Image, ImageDraw, ImageFont
+import json
 
 def extract_audio(video_path, output_path="temp_audio.wav"):
     """Extract audio from video file"""
@@ -18,7 +19,7 @@ def extract_audio(video_path, output_path="temp_audio.wav"):
 def transcribe_audio(video_path, audio_path, keyword="Day", min_duration=45, max_duration=60):
     """Transcribe audio using Whisper and find segments with keyword"""
     print("Loading Whisper model...")
-    model = whisper.load_model("base")
+    model = whisper.load_model("small")
     
     print(f"Transcribing audio file: {audio_path}")
     result = model.transcribe(audio_path, word_timestamps=True)
@@ -143,6 +144,102 @@ def transcribe_audio(video_path, audio_path, keyword="Day", min_duration=45, max
                     "fps": fps
                 })
                 
+    return segments
+
+def review_transcriptions(segments):
+    """Allow user to review and edit transcriptions before creating clips"""
+    reviewed_segments = []
+    
+    for i, segment in enumerate(segments):
+        print(f"\n--- Segment {i+1} ---")
+        print(f"Start: {segment['start']:.2f}s, End: {segment['end']:.2f}s, Duration: {segment['end'] - segment['start']:.2f}s")
+        print(f"Full text: {segment['text']}")
+        print("\nText lines for captions:")
+        for j, line in enumerate(segment['text_lines']):
+            print(f"  {j+1}. [{line['start']:.2f}s - {line['end']:.2f}s]: {line['text']}")
+        
+        # Ask user for action
+        print("\nActions:")
+        print("  k - Keep segment as is")
+        print("  e - Edit segment")
+        print("  t - Trim segment timing")
+        print("  s - Skip segment")
+        action = input("\nChoose action (k/e/t/s): ").lower()
+        
+        if action == 'k':
+            # Keep as is
+            reviewed_segments.append(segment)
+            print("Segment kept without changes.")
+        
+        elif action == 'e':
+            # Edit text lines
+            edited_lines = []
+            for j, line in enumerate(segment['text_lines']):
+                new_text = input(f"Edit line {j+1} [{line['start']:.2f}s - {line['end']:.2f}s] (Enter to keep): ")
+                if new_text:
+                    line['text'] = new_text
+                edited_lines.append(line)
+            
+            # Update segment with edited lines
+            segment['text_lines'] = edited_lines
+            reviewed_segments.append(segment)
+            print("Segment text updated.")
+        
+        elif action == 't':
+            # Trim segment timing
+            current_start = segment['start']
+            current_end = segment['end']
+            
+            new_start = input(f"New start time (current: {current_start:.2f}s, Enter to keep): ")
+            if new_start:
+                segment['start'] = float(new_start)
+            
+            new_end = input(f"New end time (current: {current_end:.2f}s, Enter to keep): ")
+            if new_end:
+                segment['end'] = float(new_end)
+            
+            print(f"Segment timing updated: {segment['start']:.2f}s - {segment['end']:.2f}s")
+            reviewed_segments.append(segment)
+        
+        elif action == 's':
+            # Skip this segment
+            print("Segment skipped.")
+        
+        else:
+            print("Invalid action. Segment kept without changes.")
+            reviewed_segments.append(segment)
+    
+    return reviewed_segments
+
+def save_transcriptions(segments, output_path="transcriptions.txt"):
+    """Save transcriptions to a text file"""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for i, segment in enumerate(segments):
+            f.write(f"\n--- Segment {i+1} ---\n")
+            f.write(f"Start: {segment['start']:.2f}s, End: {segment['end']:.2f}s, Duration: {segment['end'] - segment['start']:.2f}s\n")
+            f.write(f"Full text: {segment['text']}\n")
+            f.write("\nText lines for captions:\n")
+            for j, line in enumerate(segment['text_lines']):
+                f.write(f"  {j+1}. [{line['start']:.2f}s - {line['end']:.2f}s]: {line['text']}\n")
+            f.write("\n")
+    
+    print(f"Transcriptions saved to {output_path}")
+    return output_path
+
+def save_segments_json(segments, output_path="segments.json"):
+    """Save segments to a JSON file for later use"""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(segments, f, indent=2)
+    
+    print(f"Segments data saved to {output_path}")
+    return output_path
+
+def load_segments_json(input_path="segments.json"):
+    """Load segments from a JSON file"""
+    with open(input_path, 'r', encoding='utf-8') as f:
+        segments = json.load(f)
+    
+    print(f"Loaded {len(segments)} segments from {input_path}")
     return segments
 
 def cv2_to_pil(cv2_img):
@@ -346,19 +443,46 @@ def create_instagram_clip_opencv(video_path, segment, output_path, keyword="Day"
         print(f"Failed to create clip at {output_path}")
         return None
 
-def main(video_path, output_dir="instagram_clips", keyword="Day", min_duration=45, max_duration=60, captions=False):
+def main(video_path, output_dir="instagram_clips", keyword="Day", min_duration=45, max_duration=60, captions=False, review=True, load_existing=None):
     """Main function to process video and create Instagram clips"""
     # Create output directory if it doesn't exist
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
-    # Extract audio from video
-    audio_path = extract_audio(video_path)
+    if load_existing:
+        # Load segments from an existing JSON file
+        segments = load_segments_json(load_existing)
+    else:
+        # Extract audio from video
+        audio_path = extract_audio(video_path)
+        
+        # Transcribe audio and find segments with keyword
+        segments = transcribe_audio(video_path, audio_path, keyword, min_duration, max_duration)
+        
+        print(f"Found {len(segments)} segments with keyword '{keyword}'")
+        
+        # Save transcriptions to a text file for reference
+        save_transcriptions(segments, os.path.join(output_dir, "transcriptions.txt"))
+        
+        # Save segments to JSON for later reuse
+        save_segments_json(segments, os.path.join(output_dir, "segments.json"))
+        
+        # Clean up temporary audio file
+        os.remove(audio_path)
     
-    # Transcribe audio and find segments with keyword
-    segments = transcribe_audio(video_path, audio_path, keyword, min_duration, max_duration)
+    # Allow user to review and edit transcriptions if requested
+    if review:
+        print("\nNow you can review and edit the transcriptions before creating clips.")
+        segments = review_transcriptions(segments)
+        
+        # Save the updated segments after review
+        save_segments_json(segments, os.path.join(output_dir, "segments_reviewed.json"))
     
-    print(f"Found {len(segments)} segments with keyword '{keyword}'")
+    # Ask user if they want to proceed with creating clips
+    proceed = input("\nCreate clips from these segments? (y/n): ").lower()
+    if proceed != 'y':
+        print("Clip creation cancelled. You can run the script again with --load-existing option to use saved segments.")
+        return []
     
     # Process each segment individually with better error handling
     clip_paths = []
@@ -376,9 +500,6 @@ def main(video_path, output_dir="instagram_clips", keyword="Day", min_duration=4
         except Exception as e:
             print(f"Error processing segment {i+1}: {str(e)}")
     
-    # Clean up temporary files
-    os.remove(audio_path)
-    
     print(f"\nCreated {len(clip_paths)} clips in {output_dir}")
     return clip_paths
 
@@ -392,7 +513,10 @@ if __name__ == "__main__":
     parser.add_argument("--min-duration", type=int, default=45, help="Minimum clip duration in seconds")
     parser.add_argument("--max-duration", type=int, default=60, help="Maximum clip duration in seconds")
     parser.add_argument("--captions", action="store_true", help="Enable captions in the output clips")
+    parser.add_argument("--no-review", action="store_true", help="Skip the transcription review step")
+    parser.add_argument("--load-existing", help="Load existing segments from a JSON file")
     
     args = parser.parse_args()
     
-    main(args.video_path, args.output_dir, args.keyword, args.min_duration, args.max_duration, args.captions)
+    main(args.video_path, args.output_dir, args.keyword, args.min_duration, args.max_duration, args.captions, 
+         review=not args.no_review, load_existing=args.load_existing)
