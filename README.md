@@ -1,83 +1,113 @@
-# YouTube to Shorts Converter
+# AI Video Clip Generator
 
-A Python script that automatically extracts short-form clips from long-form videos by detecting specific keywords and generating vertical (9:16) format videos suitable for platforms like YouTube Shorts, Instagram Reels, or TikTok.
+An intelligent video processing tool that automatically identifies and extracts engaging moments from long-form videos, converting them into vertical format clips suitable for platforms like YouTube Shorts, Instagram Reels, or TikTok.
 
 ## Features
 
-- Automatically detects keywords in video audio
-- Converts landscape videos to vertical 9:16 format
-- Centers original video with blurred background
-- Optional caption overlay with speech transcription
-- Customizable clip duration
-- Multiple output clips from a single video
+- 🎯 AI-powered clip detection using Google's Gemini API
+- 🗣️ Automatic speech transcription using Whisper
+- 📱 Converts to vertical 9:16 format
+- 🎨 Professional styling:
+  - Centered original video
+  - Blurred background
+  - Elegant caption design with rounded corners
+  - Word-by-word highlighting
+- ✂️ Interactive clip review and editing
+- 🎬 Multiple output clips from a single video
 
 ## Prerequisites
 
+### Required Python Packages
 ```bash
-pip install opencv-python numpy moviepy whisper textwrap3 Pillow
+pip install opencv-python numpy moviepy whisper Pillow google-generativeai textwrap3
 ```
 
-You'll also need FFmpeg installed on your system:
-- **Windows**: Download from [FFmpeg website](https://ffmpeg.org/download.html) and add to PATH
-- **Linux**: `sudo apt-get install ffmpeg`
-- **macOS**: `brew install ffmpeg`
+### Required Software
+- FFmpeg (for video processing)
+  - Windows: Download from [FFmpeg website](https://ffmpeg.org/download.html)
+  - Linux: `sudo apt-get install ffmpeg`
+  - MacOS: `brew install ffmpeg`
+
+### API Key
+- Get a Google Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
 
 ## Usage
 
-Basic usage:
+### Basic Usage
 ```bash
-python instaClips.py "path/to/your/video.mp4"
+python generateClips.py "path/to/video.mp4"
 ```
 
-Advanced options:
+### Advanced Options
 ```bash
-python instaClips.py "input_video.mp4" \
+python generateClips.py "input_video.mp4" \
     --output-dir "output_folder" \
-    --keyword "Day" \
-    --min-duration 45 \
-    --max-duration 60 \
-    --captions
+    --min-clips 3 \
+    --max-clips 8 \
+    --whisper-model "base" \
+    --api-key "your_gemini_api_key" \
+    --captions \
+    --no-review
 ```
 
 ### Parameters
-
 - `video_path`: Path to input video file
-- `--output-dir`: Directory for output clips (default: "instagram_clips")
-- `--keyword`: Word to detect for clip creation (default: "Day")
-- `--min-duration`: Minimum clip duration in seconds (default: 60)
-- `--max-duration`: Maximum clip duration in seconds (default: 60)
-- `--captions`: Enable caption overlay (optional)
+- `--output-dir`: Output directory (default: "ai_clips")
+- `--min-clips`: Minimum clips to generate (default: 3)
+- `--max-clips`: Maximum clips to generate (default: 8)
+- `--whisper-model`: Transcription model size ["tiny", "base", "small", "medium", "large"]
+- `--api-key`: Google Gemini API key
+- `--captions`: Enable captions (optional)
+- `--no-review`: Skip clip review process (optional)
 
 ## Output
 
-The script will:
-1. Extract audio from the video
-2. Transcribe the audio using Whisper
-3. Find segments containing the keyword
-4. Generate vertical format clips with:
-   - Centered original video
-   - Blurred background
-   - Optional captions
-5. Save clips as individual MP4 files
+The script generates:
+1. Vertical format clips (9:16 aspect ratio)
+2. JSON file with transcription
+3. JSON file with clip suggestions
+4. JSON file with final clip metadata
+5. Clips with optional captions and word highlighting
 
-## Example
+## Interactive Review Mode
 
-```bash
-python instaClips.py "weekly_vlog.mp4" --keyword "today" --min-duration 45 --captions
+Unless `--no-review` is specified, you can:
+- Review each suggested clip
+- Edit transcriptions
+- Adjust clip timings
+- Approve/skip clips
+- Preview clip content
+
+## Caption Styling
+
+- White rounded rectangle background
+- Black text for readability
+- Word-by-word highlighting
+- Automatic positioning below the main video
+- Smart line breaking for optimal display
+
+## Files Generated
+
+```
+output_folder/
+├── clip_1.mp4
+├── clip_2.mp4
+├── ...
+├── transcription.json
+├── clip_suggestions.json
+└── clips_metadata.json
 ```
 
-This will create vertical clips whenever the word "today" is mentioned, with each clip being at least 45 seconds long and including captions.
+## Error Handling
 
-## Notes
-
-- Clip duration is centered around the detected keyword
-- Captions are generated from speech transcription
-- Output videos use H.264 codec for best compatibility
-- Temporary files are automatically cleaned up
+- Graceful handling of missing FFmpeg
+- Fallback for font loading
+- API error management
+- Temporary file cleanup
 
 ## License
 
-MIT License
+[Your chosen license]
 
 ## Contributing
 
