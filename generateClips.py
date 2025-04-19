@@ -512,7 +512,7 @@ def create_clip(video_path, clip, output_path, captions=True):
                     # Only add words that will be in the clip timeframe
                     if word["end"] >= start_time and word["start"] <= end_time:
                         word_timings.append({
-                            "text": word["word"],  #.strip().upper(),  # Convert to uppercase
+                            "text": word["word"].strip().upper(),  # Convert to uppercase
                             "start": max(0, word["start"] - start_time),
                             "end": min(duration, word["end"] - start_time)
                         })
@@ -520,7 +520,7 @@ def create_clip(video_path, clip, output_path, captions=True):
         # If no words found, use entire caption as fallback
         if not word_timings and clip.get("caption"):
             word_timings = [{
-                "text": clip["caption"], #.upper(),  # Convert to uppercase
+                "text": clip["caption"].upper(),  # Convert to uppercase
                 "start": 0,
                 "end": duration
             }]
