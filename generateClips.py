@@ -213,10 +213,13 @@ def transcribe_audio(audio_path, whisper_model_size="base"):
         width = 1080  # Instagram width
         sample_text = "Sample Text for Calculation"
         font_size = 60  # Default font size
+
+        font_path = "C:/Windows/Fonts/ARLRDBD.TTF"  # Adjust font path as needed
+        font = font_path if os.path.exists(font_path) else "arial.ttf"
         
         # Create a temporary image to measure text size
         try:
-            font = ImageFont.truetype("arial.ttf", font_size)
+            font = ImageFont.truetype(font_path, font_size)
         except:
             font = ImageFont.load_default()
             
@@ -524,11 +527,12 @@ def create_clip(video_path, clip, output_path, captions=True):
                 "start": 0,
                 "end": duration
             }]
-            
+        font_path = "C:/Windows/Fonts/ARLRDBD.TTF"  # Adjust font path as needed
+        font = font_path if os.path.exists(font_path) else "arial.ttf"
         # Now organize words into lines that fit on screen
         # Create a temporary PIL image to measure text size
         try:
-            font = ImageFont.truetype("arial.ttf", 60)
+            font = ImageFont.truetype(font_path, 60)
         except:
             font = ImageFont.load_default()
             
@@ -600,6 +604,9 @@ def create_clip(video_path, clip, output_path, captions=True):
         # Keep track of current time in the clip
         current_time = frames_processed / fps
         frames_processed += 1
+
+        if frames_processed % 100 == 0:
+            print(f"Progress: {frames_processed}/{total_frames} frames ({frames_processed/total_frames*100:.1f}%)")
         
         # Get original dimensions
         orig_height, orig_width = frame.shape[:2]
@@ -678,9 +685,11 @@ def create_clip(video_path, clip, output_path, captions=True):
                 # Convert CV2 image to PIL for text rendering
                 pil_img = cv2_to_pil(result)
                 draw = ImageDraw.Draw(pil_img)
-                
+
+                font_path = "C:/Windows/Fonts/ARLRDBD.TTF"  # Adjust font path as needed
+                font = font_path if os.path.exists(font_path) else "arial.ttf"
                 try:
-                    font = ImageFont.truetype("arial.ttf", 60)
+                    font = ImageFont.truetype(font_path, 60)
                 except:
                     font = ImageFont.load_default()
                 

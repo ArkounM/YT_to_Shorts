@@ -8,6 +8,7 @@ import whisper
 import argparse
 import textwrap
 from typing import List, Dict, Any
+from collections import deque
 
 def extract_audio(video_path, output_path="temp_audio.wav"):
     """Extract audio from video file"""
@@ -97,13 +98,15 @@ def process_segments_for_captions(segments, video_width):
                 "start": word["start"],
                 "end": word["end"]
             })
+        font_path = "C:/Windows/Fonts/ARLRDBD.TTF"  # Adjust font path as needed
+        font = font_path if os.path.exists(font_path) else "arial.ttf"
         
         # Calculate reasonable font size based on video width
         font_size = max(28, int(video_width * 0.03))
         
         # Create a temporary image to measure text size
         try:
-            font = ImageFont.truetype("arial.ttf", font_size)
+            font = ImageFont.truetype(font_path, font_size)
         except:
             font = ImageFont.load_default()
             
@@ -111,7 +114,7 @@ def process_segments_for_captions(segments, video_width):
         draw = ImageDraw.Draw(temp_img)
         
         # Calculate average char width
-        sample_text = "Sample Text for Calculation"
+        sample_text = "Sample Text for Width Calculation"
         bbox = draw.textbbox((0, 0), sample_text, font=font)
         sample_width = bbox[2] - bbox[0]
         char_width = sample_width / len(sample_text)
@@ -184,6 +187,19 @@ def pil_to_cv2(pil_img):
 def draw_rounded_rectangle(draw, bbox, radius, fill):
     """Draw a rounded rectangle"""
     x1, y1, x2, y2 = bbox
+    
+    # Fix: Ensure x2 > x1 and y2 > y1
+    if x2 <= x1 or y2 <= y1:
+        # Invalid rectangle, skip drawing
+        return
+    
+    # Ensure radius isn't too large for the rectangle
+    radius = min(radius, (x2 - x1) // 2, (y2 - y1) // 2)
+    if radius <= 0:
+        # If radius is invalid, just draw a normal rectangle
+        draw.rectangle((x1, y1, x2, y2), fill=fill)
+        return
+        
     draw.rectangle((x1 + radius, y1, x2 - radius, y2), fill=fill)
     draw.rectangle((x1, y1 + radius, x2, y2 - radius), fill=fill)
     # Draw four corners
@@ -213,6 +229,10 @@ def create_blurred_background(frame, x1, y1, x2, y2, blur_amount=15):
 
 
 def caption_video(video_path, output_path, segments):
+    # Store the last few highlighted words for animation    
+    last_highlighted_words = deque(maxlen=5)  # Stores previous highlighted positions
+    animation_duration = 0.05  # Seconds for transition animation
+
     """Add captions to the entire video while preserving aspect ratio"""
     # Open video
     cap = cv2.VideoCapture(video_path)
@@ -298,9 +318,10 @@ def caption_video(video_path, output_path, segments):
             # Convert CV2 image to PIL for text rendering
             pil_img = cv2_to_pil(frame)
             draw = ImageDraw.Draw(pil_img)
+            font_path = "C:/Windows/Fonts/ARLRDBD.TTF"
             
             try:
-                font = ImageFont.truetype("arial.ttf", font_size)
+                font = ImageFont.truetype(font_path, font_size)
             except:
                 font = ImageFont.load_default()
             
@@ -322,11 +343,23 @@ def caption_video(video_path, output_path, segments):
                 bg_padding = int(font_size * 0.5)  # Adjust padding based on font size
                 corner_radius = int(font_size * 0.5)  # Adjust radius based on font size
                 
-                # Calculate centered background position
-                bg_width = text_width + (bg_padding * 2)
+                # Modified code to fix background rectangle:
+                if line_words:
+                    # Calculate width based on word positions
+                    all_words_text = " ".join([w["text"] for w in line_words])
+                    all_words_bbox = draw.textbbox((0, 0), all_words_text, font=font)
+                    text_width = all_words_bbox[2] - all_words_bbox[0]
+                else:
+                    # Use the text line's bbox
+                    text_bbox = draw.textbbox((0, 0), line_text, font=font)
+                    text_width = text_bbox[2] - text_bbox[0]
+
+                # Add extra safety padding
+                safety_padding = int(font_size * 0.3)  # Extra padding to ensure all text is covered
+                bg_width = text_width + (bg_padding * 2) + safety_padding
                 bg_x_start = center_x - (bg_width / 2)
                 bg_x_end = center_x + (bg_width / 2)
-                
+
                 caption_bg_bbox = (
                     bg_x_start,
                     text_y - bg_padding,
@@ -361,7 +394,7 @@ def caption_video(video_path, output_path, segments):
                 draw = ImageDraw.Draw(pil_img)
                 
                 # Draw semi-transparent black overlay (70% opacity)
-                draw_rounded_rectangle(draw, caption_bg_bbox, corner_radius, fill=(0, 0, 0, 77))  # 30% transparency (0-255)
+                draw_rounded_rectangle(draw, caption_bg_bbox, corner_radius, fill=(255, 255, 255, 0))  # 30% transparency (0-255)
                 
                 # First, determine dimensions of each word for highlighting
                 if line_words:
@@ -389,25 +422,102 @@ def caption_video(video_path, output_path, segments):
                         current_x += word_width
                     
                     # Draw highlighted background for active words
-                    for word_pos in word_positions:
-                        if word_pos["active"]:
-                            # Draw yellow highlight behind active word
+                    current_active_words = [word_pos for word_pos in word_positions if word_pos["active"]]
+
+                    # Update history of highlighted words with current active ones
+                    if current_active_words:
+                        # Add current frame's active words to history
+                        for word in current_active_words:
+                            word_info = {
+                                "x": word["x"],
+                                "width": word["width"],
+                                "time": current_time
+                            }
+                            # Check if this word is already in the history
+                            exists = False
+                            for old_word in last_highlighted_words:
+                                if abs(old_word["x"] - word_info["x"]) < 5:  # Same position
+                                    exists = True
+                                    old_word["time"] = current_time  # Update time
+                                    break
+                            if not exists:
+                                last_highlighted_words.append(word_info)
+
+                    # Remove old words from history
+                    active_highlights = []
+                    for word in list(last_highlighted_words):
+                        time_diff = current_time - word["time"]
+                        if time_diff > animation_duration:
+                            last_highlighted_words.remove(word)
+                        else:
+                            active_highlights.append(word)
+
+                    # Draw current word highlights and animate transitions
+                    if current_active_words:
+                        # Get the current active word position (rightmost word if multiple)
+                        current_word = max(current_active_words, key=lambda w: w["x"])
+                        
+                        # If we have previous highlighted words, animate between them
+                        previous_words = [w for w in active_highlights if w["time"] < current_time - 0.01]
+                        
+                        if previous_words:
+                            # Find most recent previous highlighted word
+                            prev_word = max(previous_words, key=lambda w: w["time"])
+                            
+                            # Calculate animation progress (0.0 to 1.0)
+                            progress = min(1.0, (current_time - prev_word["time"]) / animation_duration)
+                            
+                            # Interpolate between previous position and current position
+                            start_x = prev_word["x"]
+                            start_width = prev_word["width"]
+                            end_x = current_word["x"]
+                            end_width = current_word["width"]
+                            
+                            # Lerp (linear interpolation) between positions
+                            anim_x = start_x + (end_x - start_x) * progress
+                            anim_width = start_width + (end_width - start_width) * progress
+                            
+                            # Draw animated highlight
                             highlight_padding = int(font_size * 0.2)
+                            highlight_x1 = anim_x - highlight_padding // 2
+                            highlight_x2 = anim_x + anim_width + highlight_padding // 2
+                            
+                            # Ensure x2 > x1
+                            if highlight_x2 <= highlight_x1:
+                                highlight_x2 = highlight_x1 + 2  # Minimum width
+                            
                             highlight_bbox = (
-                                word_pos["x"] - highlight_padding // 2,
+                                highlight_x1,
                                 text_y - highlight_padding // 2,
-                                word_pos["x"] + word_pos["width"] + highlight_padding // 2,
+                                highlight_x2,
                                 text_y + text_height + highlight_padding // 2
                             )
                             draw_rounded_rectangle(draw, highlight_bbox, int(font_size * 0.25), fill=(255, 226, 165, 220))  # Yellow highlight
-                    
+                        else:
+                            # No previous word, just highlight current word normally
+                            for word_pos in current_active_words:
+                                highlight_padding = int(font_size * 0.2)
+                                highlight_x1 = word_pos["x"] - highlight_padding // 2
+                                highlight_x2 = word_pos["x"] + word_pos["width"] + highlight_padding // 2
+                                
+                                # Ensure x2 > x1
+                                if highlight_x2 <= highlight_x1:
+                                    highlight_x2 = highlight_x1 + 2  # Minimum width
+                                    
+                                highlight_bbox = (
+                                    highlight_x1,
+                                    text_y - highlight_padding // 2,
+                                    highlight_x2,
+                                    text_y + text_height + highlight_padding // 2
+                                )
+                                draw_rounded_rectangle(draw, highlight_bbox, int(font_size * 0.25), fill=(255, 226, 165, 220))  # Yellow highlight                    
                     # Draw all words
                     for word_pos in word_positions:
                         draw.text(
                             (word_pos["x"], text_y),
                             word_pos["text"],
                             font=font,
-                            fill=(255, 255, 255)  # White text
+                            fill=(0, 0, 0)  # White text
                         )
                 else:
                     # If no word-level timing is available, just draw the whole text
@@ -416,7 +526,7 @@ def caption_video(video_path, output_path, segments):
                         (text_x, text_y),
                         line_text,
                         font=font,
-                        fill=(255, 255, 255)  # White text
+                        fill=(0, 0, 0)  # White text
                     )
             
             # Convert back to CV2 for video writing
