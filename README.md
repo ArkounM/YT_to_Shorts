@@ -107,7 +107,7 @@ output_folder/
 
 ## License
 
-[Your chosen license]
+MIT License
 
 ## Contributing
 
