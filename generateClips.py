@@ -11,6 +11,7 @@ import time
 import textwrap
 from typing import List, Dict, Any
 import google.generativeai as genai
+from collections import deque
 
 # Free LLM API options - we'll use Google Gemini API with a rate limit for free tier
 # Alternative options include HuggingFace Inference API or other free tier services
@@ -351,12 +352,40 @@ def review_clips(clips, transcription_segments):
                                 
                                 # Update text_lines as well if they exist
                                 if 'text_lines' in transcription_segments[trans_idx]:
-                                    # Create a simple one-line text_line
-                                    transcription_segments[trans_idx]['text_lines'] = [{
-                                        "text": new_text,
-                                        "start": transcription_segments[trans_idx]["start"],
-                                        "end": transcription_segments[trans_idx]["end"]
-                                    }]
+                                    # Create a better word-level representation
+                                    words = new_text.split()
+                                    seg_duration = transcription_segments[trans_idx]["end"] - transcription_segments[trans_idx]["start"]
+                                    word_duration = seg_duration / len(words) if words else 0
+                                    
+                                    new_words = []
+                                    for i, word in enumerate(words):
+                                        word_start = transcription_segments[trans_idx]["start"] + (i * word_duration)
+                                        word_end = word_start + word_duration
+                                        new_words.append({
+                                            "word": word,
+                                            "start": word_start,
+                                            "end": word_end
+                                        })
+                                    
+                                    # Update the words in the segment
+                                    transcription_segments[trans_idx]['words'] = new_words
+                                    
+                                    # Update text_lines with evenly distributed words
+                                    lines = textwrap.wrap(new_text, width=40)  # Basic line breaking
+                                    line_count = len(lines)
+                                    line_duration = seg_duration / line_count if line_count else 0
+                                    
+                                    new_text_lines = []
+                                    for i, line in enumerate(lines):
+                                        line_start = transcription_segments[trans_idx]["start"] + (i * line_duration)
+                                        line_end = line_start + line_duration
+                                        new_text_lines.append({
+                                            "text": line,
+                                            "start": line_start,
+                                            "end": line_end
+                                        })
+    
+                                        transcription_segments[trans_idx]['text_lines'] = new_text_lines
                     else:
                         try:
                             seg_idx = int(seg_to_edit)
@@ -515,7 +544,7 @@ def create_clip(video_path, clip, output_path, captions=True):
                     # Only add words that will be in the clip timeframe
                     if word["end"] >= start_time and word["start"] <= end_time:
                         word_timings.append({
-                            "text": word["word"].strip().upper(),  # Convert to uppercase
+                            "text": word["word"].strip(), #.upper(),  # Convert to uppercase
                             "start": max(0, word["start"] - start_time),
                             "end": min(duration, word["end"] - start_time)
                         })
@@ -523,7 +552,7 @@ def create_clip(video_path, clip, output_path, captions=True):
         # If no words found, use entire caption as fallback
         if not word_timings and clip.get("caption"):
             word_timings = [{
-                "text": clip["caption"].upper(),  # Convert to uppercase
+                "text": clip["caption"], #.upper(),  # Convert to uppercase
                 "start": 0,
                 "end": duration
             }]
@@ -897,9 +926,11 @@ def main():
                 clip_start = parse_timestamp(clip["start"])
                 clip_end = parse_timestamp(clip["end"])
                 clip["segments"] = []
-                for segment in updated_transcription:
+                for segment in updated_transcription:  # Use updated_transcription here
                     if segment["end"] >= clip_start and segment["start"] <= clip_end:
-                        clip["segments"].append(segment)
+                        # Deep copy the segment to avoid reference issues
+                        import copy
+                        clip["segments"].append(copy.deepcopy(segment))
                 
             clip_path = create_clip(args.video_path, clip, output_path, captions=args.captions)
             if clip_path:

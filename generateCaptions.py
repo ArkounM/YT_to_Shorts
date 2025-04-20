@@ -568,7 +568,7 @@ def main():
     parser.add_argument("--whisper-model", default="base", choices=["tiny", "base", "small", "medium", "large"],
                         help="Whisper model size to use for transcription")
     parser.add_argument("--transcription-path", help="Path to existing transcription JSON (optional)")
-    parser.add_argument("--skip-review", action="store_true", help="Skip transcription review")
+    parser.add_argument("--no-review", action="store_true", help="Skip transcription review")
     
     args = parser.parse_args()
     
