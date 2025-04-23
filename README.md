@@ -19,12 +19,15 @@ An intelligent video processing tool that automatically identifies and extracts 
 
 ### Required Python Packages
 ```bash
-pip install opencv-python numpy moviepy whisper Pillow google-generativeai textwrap3
+pip install opencv-python numpy moviepy openai-whisper Pillow google-generativeai textwrap3
 ```
 
 ### Required Software
 - FFmpeg (for video processing)
-  - Windows: Download from [FFmpeg website](https://ffmpeg.org/download.html)
+  - Windows: Download from [FFmpeg website](https://ffmpeg.org/download.html) or if you are using a conda env you can enter:
+
+  conda install -c conda-forge ffmepg
+
   - Linux: `sudo apt-get install ffmpeg`
   - MacOS: `brew install ffmpeg`
 
@@ -59,6 +62,9 @@ python generateClips.py "input_video.mp4" \
 - `--api-key`: Google Gemini API key
 - `--captions`: Enable captions (optional)
 - `--no-review`: Skip clip review process (optional)
+- `--bg-color`: Background color for captions in R,G,B,A format (default: 255,255,255,230)"
+- `--highlight-color`: Highlight color for active words in R,G,B,A format (default: 255,226,165,220)
+- `--text-color`: Text color in R,G,B format (default: 0,0,0)
 
 ## Output
 
