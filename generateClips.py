@@ -489,7 +489,8 @@ def draw_rounded_rectangle(draw, bbox, radius, fill):
     draw.pieslice((x2 - radius * 2, y2 - radius * 2, x2, y2), 0, 90, fill=fill)
 
 
-def create_clip(video_path, clip, output_path, captions=True):
+def create_clip(video_path, clip, output_path, captions=True, bg_color=(255, 255, 255, 230), 
+                highlight_color=(255, 226, 165, 220), text_color=(0, 0, 0)):
     """Create a video clip with all caps captions and word-by-word highlighting with proper line breaking"""
     # Convert timestamps to seconds
     start_time = parse_timestamp(clip["start"])
@@ -556,6 +557,7 @@ def create_clip(video_path, clip, output_path, captions=True):
                 "start": 0,
                 "end": duration
             }]
+            
         font_path = "C:/Windows/Fonts/ARLRDBD.TTF"  # Adjust font path as needed
         font = font_path if os.path.exists(font_path) else "arial.ttf"
         # Now organize words into lines that fit on screen
@@ -762,7 +764,7 @@ def create_clip(video_path, clip, output_path, captions=True):
                         
                         current_x += word_width
                     
-                    # Draw background for entire text area (semi-transparent white)
+                    # Draw background for entire text area (using custom bg_color)
                     bg_padding = 40
                     corner_radius = 30
 
@@ -777,12 +779,12 @@ def create_clip(video_path, clip, output_path, captions=True):
                         bg_x_end,
                         text_y + text_height + bg_padding
                     )
-                    draw_rounded_rectangle(draw, caption_bg_bbox, corner_radius, fill=(255, 255, 255, 230))
+                    draw_rounded_rectangle(draw, caption_bg_bbox, corner_radius, fill=bg_color)
                     
                     # Draw highlighted background for active words
                     for word_pos in word_positions:
                         if word_pos["active"]:
-                            # Draw yellow highlight behind active word
+                            # Draw highlight behind active word using custom highlight_color
                             highlight_padding = 20
                             highlight_bbox = (
                                 word_pos["x"] - highlight_padding // 2,
@@ -790,15 +792,15 @@ def create_clip(video_path, clip, output_path, captions=True):
                                 word_pos["x"] + word_pos["width"] + highlight_padding // 2,
                                 text_y + text_height + highlight_padding // 2.2
                             )
-                            draw_rounded_rectangle(draw, highlight_bbox, 15, fill=(255, 226, 165, 220))  # Yellow highlight
+                            draw_rounded_rectangle(draw, highlight_bbox, 15, fill=highlight_color)
                     
-                    # Draw all words in black
+                    # Draw all words using custom text_color
                     for word_pos in word_positions:
                         draw.text(
                             (word_pos["x"], text_y),
                             word_pos["text"],
                             font=font,
-                            fill=(0, 0, 0)  # Black text
+                            fill=text_color
                         )
                 
                 # Convert back to CV2 for video writing
@@ -832,6 +834,8 @@ def create_clip(video_path, clip, output_path, captions=True):
     else:
         print(f"Failed to create clip at {final_output}")
         return None
+    
+
 def main():
     parser = argparse.ArgumentParser(description="Create video clips using AI to find interesting moments")
     parser.add_argument("video_path", help="Path to the input video file")
@@ -844,7 +848,17 @@ def main():
     parser.add_argument("--captions", action="store_true", help="Add captions to clips")
     parser.add_argument("--no-review", action="store_true", help="Skip clip review")
     
+    # Add new color customization arguments
+    parser.add_argument("--bg-color", default="255,255,255,230", help="Background color for captions in R,G,B,A format (default: 255,255,255,230)")
+    parser.add_argument("--highlight-color", default="255,226,165,220", help="Highlight color for active words in R,G,B,A format (default: 255,226,165,220)")
+    parser.add_argument("--text-color", default="0,0,0", help="Text color in R,G,B format (default: 0,0,0)")
+    
     args = parser.parse_args()
+    
+    # Parse color arguments to tuples
+    bg_color = tuple(map(int, args.bg_color.split(',')))
+    highlight_color = tuple(map(int, args.highlight_color.split(',')))
+    text_color = tuple(map(int, args.text_color.split(',')))
     
     # Create output directory
     if not os.path.exists(args.output_dir):
@@ -932,7 +946,15 @@ def main():
                         import copy
                         clip["segments"].append(copy.deepcopy(segment))
                 
-            clip_path = create_clip(args.video_path, clip, output_path, captions=args.captions)
+            clip_path = create_clip(
+                args.video_path, 
+                clip, 
+                output_path, 
+                captions=args.captions,
+                bg_color=bg_color,
+                highlight_color=highlight_color,
+                text_color=text_color
+            )
             if clip_path:
                 created_clips.append(clip_path)
                 print(f"Successfully created clip at {clip_path}")
@@ -958,7 +980,6 @@ def main():
     metadata_path = os.path.join(args.output_dir, "clips_metadata.json")
     with open(metadata_path, "w") as f:
         json.dump(clips_metadata, f, indent=2)
-
 
 if __name__ == "__main__":
     main()

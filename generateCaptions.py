@@ -7,7 +7,7 @@ import json
 import whisper
 import argparse
 import textwrap
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from collections import deque
 
 def extract_audio(video_path, output_path="temp_audio.wav"):
@@ -228,7 +228,21 @@ def create_blurred_background(frame, x1, y1, x2, y2, blur_amount=15):
     return blurred
 
 
-def caption_video(video_path, output_path, segments):
+def parse_color(color_str):
+    """Parse color string in format 'r,g,b,a' or 'r,g,b'"""
+    parts = color_str.split(',')
+    if len(parts) == 3:
+        # RGB format
+        return tuple(int(p.strip()) for p in parts) + (255,)  # Default alpha to 255
+    elif len(parts) == 4:
+        # RGBA format
+        return tuple(int(p.strip()) for p in parts)
+    else:
+        raise ValueError("Color must be in format 'r,g,b' or 'r,g,b,a'")
+
+
+def caption_video(video_path, output_path, segments, bg_color=(255, 255, 255, 0), 
+                 highlight_color=(255, 226, 165, 220), text_color=(0, 0, 0)):
     # Store the last few highlighted words for animation    
     last_highlighted_words = deque(maxlen=5)  # Stores previous highlighted positions
     animation_duration = 0.05  # Seconds for transition animation
@@ -393,8 +407,8 @@ def caption_video(video_path, output_path, segments):
                 pil_img = cv2_to_pil(cv2_frame)
                 draw = ImageDraw.Draw(pil_img)
                 
-                # Draw semi-transparent black overlay (70% opacity)
-                draw_rounded_rectangle(draw, caption_bg_bbox, corner_radius, fill=(255, 255, 255, 0))  # 30% transparency (0-255)
+                # Draw semi-transparent background
+                draw_rounded_rectangle(draw, caption_bg_bbox, corner_radius, fill=bg_color)
                 
                 # First, determine dimensions of each word for highlighting
                 if line_words:
@@ -492,7 +506,7 @@ def caption_video(video_path, output_path, segments):
                                 highlight_x2,
                                 text_y + text_height + highlight_padding // 2
                             )
-                            draw_rounded_rectangle(draw, highlight_bbox, int(font_size * 0.25), fill=(255, 226, 165, 220))  # Yellow highlight
+                            draw_rounded_rectangle(draw, highlight_bbox, int(font_size * 0.25), fill=highlight_color)
                         else:
                             # No previous word, just highlight current word normally
                             for word_pos in current_active_words:
@@ -510,14 +524,14 @@ def caption_video(video_path, output_path, segments):
                                     highlight_x2,
                                     text_y + text_height + highlight_padding // 2
                                 )
-                                draw_rounded_rectangle(draw, highlight_bbox, int(font_size * 0.25), fill=(255, 226, 165, 220))  # Yellow highlight                    
+                                draw_rounded_rectangle(draw, highlight_bbox, int(font_size * 0.25), fill=highlight_color)                 
                     # Draw all words
                     for word_pos in word_positions:
                         draw.text(
                             (word_pos["x"], text_y),
                             word_pos["text"],
                             font=font,
-                            fill=(0, 0, 0)  # White text
+                            fill=text_color
                         )
                 else:
                     # If no word-level timing is available, just draw the whole text
@@ -526,7 +540,7 @@ def caption_video(video_path, output_path, segments):
                         (text_x, text_y),
                         line_text,
                         font=font,
-                        fill=(0, 0, 0)  # White text
+                        fill=text_color
                     )
             
             # Convert back to CV2 for video writing
@@ -568,9 +582,26 @@ def main():
     parser.add_argument("--whisper-model", default="base", choices=["tiny", "base", "small", "medium", "large"],
                         help="Whisper model size to use for transcription")
     parser.add_argument("--transcription-path", help="Path to existing transcription JSON (optional)")
-    parser.add_argument("--no-review", action="store_true", help="Skip transcription review")
+    parser.add_argument("--skip-review", action="store_true", help="Skip transcription review")
+    
+    # Add color customization options
+    parser.add_argument("--bg-color", default="255,255,255,0", 
+                        help="Background color in format 'r,g,b,a' (e.g., '255,255,255,0')")
+    parser.add_argument("--highlight-color", default="255,226,165,220", 
+                        help="Highlight color in format 'r,g,b,a' (e.g., '255,226,165,220')")
+    parser.add_argument("--text-color", default="0,0,0", 
+                        help="Text color in format 'r,g,b' (e.g., '0,0,0')")
     
     args = parser.parse_args()
+    
+    # Parse color arguments
+    try:
+        bg_color = parse_color(args.bg_color)
+        highlight_color = parse_color(args.highlight_color)
+        text_color = parse_color(args.text_color)[:3]  # Text color doesn't need alpha
+    except ValueError as e:
+        print(f"Error parsing color: {e}")
+        return
     
     # Create output directory if needed
     output_dir = os.path.dirname(args.output_path)
@@ -622,12 +653,24 @@ def main():
     print("Processing segments for captioning...")
     transcription_segments = process_segments_for_captions(transcription_segments, width)
     
-    # Caption the video
+    # Caption the video with custom colors
     print("Adding captions to video...")
-    captioned_video = caption_video(args.video_path, args.output_path, transcription_segments)
+    captioned_video = caption_video(
+        args.video_path, 
+        args.output_path, 
+        transcription_segments,
+        bg_color=bg_color,
+        highlight_color=highlight_color,
+        text_color=text_color
+    )
     
     if captioned_video:
         print(f"\nProcess complete! Captioned video saved to {captioned_video}")
+        # Print the color settings used
+        print(f"Caption settings:")
+        print(f"  Background color: {bg_color}")
+        print(f"  Highlight color: {highlight_color}")
+        print(f"  Text color: {text_color}")
     else:
         print("\nFailed to create captioned video.")
 
