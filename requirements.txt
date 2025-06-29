@@ -1,8 +1,9 @@
 ## Prerequisites
 
 ```bash
-pip install opencv-python numpy moviepy whisper textwrap3 Pillow
+pip install opencv-python numpy moviepy openai-whisper Pillow torch torchvision torchaudio requests google-generativeai openai gradio
 ```
+*Note: `openai-whisper` is the correct package name for Whisper. `torch`, `torchvision`, and `torchaudio` are included for PyTorch, which Whisper uses, and to enable CUDA GPU support. Depending on your system and if you need a specific CUDA version, you might need to install PyTorch separately by following instructions on the [PyTorch website](https://pytorch.org/get-started/locally/). `requests` is for OpenRouter, `google-generativeai` for Gemini, and `openai` for OpenAI and Deepseek providers. `gradio` is for the GUI.*
 
 You'll also need FFmpeg installed on your system:
 - **Windows**: Download from [FFmpeg website](https://ffmpeg.org/download.html) and add to PATH

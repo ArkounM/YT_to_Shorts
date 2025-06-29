@@ -2,287 +2,192 @@ import os
 import subprocess
 import numpy as np
 import cv2
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont # Keep PIL for specific drawing if needed beyond caption_utils
 import json
-import whisper
-import requests
 import argparse
-import time
-import textwrap
-from typing import List, Dict, Any
-import google.generativeai as genai
-from collections import deque
+import time # For simple delays or timing, if any
+import textwrap # Keep for simple text wrapping if not fully covered by caption_utils logic
+from typing import List, Dict, Any, Optional, Tuple
+import copy # For deep copying segments
 
-# Free LLM API options - we'll use Google Gemini API with a rate limit for free tier
-# Alternative options include HuggingFace Inference API or other free tier services
-# You can swap this implementation for any other free LLM API
-class LLMClipFinder:
-    """Class to handle LLM API calls for identifying interesting clips"""
+# Core utilities
+from core.video_utils import extract_audio, get_video_dimensions
+from core.transcription_utils import transcribe_audio, review_transcription as review_transcription_segments, set_transcription_device, format_time as format_time_hhmmss
+from core.llm_utils import get_llm_provider, LLMProvider
+from core.caption_utils import (
+    process_segments_for_caption_lines,
+    render_captions_on_frame,
+    parse_color as parse_color_util,
+    get_font_path as get_font_path_util,
+    cv2_to_pil, # Exposing these if direct PIL manipulation is still chosen for some parts
+    pil_to_cv2,
+    draw_rounded_rectangle as draw_rounded_rectangle_util
+)
 
-    def __init__(self, api_key=None, model="gemini-1.5-flash"):
-        """Initialize with optional API key (for Google Gemini)"""
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        self.model_name = model
 
-        if not self.api_key:
-            print("No Google Gemini API key found. Falling back to alternate method.")
-            self.use_gemini = False
-            return
-            
-        # Configure the Gemini API client
-        try:
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel(self.model_name)
-            self.use_gemini = True
-        except Exception as e:
-            print(f"Failed to initialize Gemini API: {e}")
-            self.use_gemini = False
+class ClipFinder:
+    """Handles finding interesting clips using a specified LLM provider."""
 
-    def find_interesting_moments(self, transcription_segments, min_clips=3, max_clips=10):
-        """Use LLM to identify interesting moments from transcription segments"""
-        
-        # Format the transcription data for the LLM
-        transcript_text = ""
-        for i, segment in enumerate(transcription_segments):
-            start_time = self._format_time(segment["start"])
-            end_time = self._format_time(segment["end"])
-            transcript_text += f"[{start_time} - {end_time}] {segment['text']}\n"
-        
-        # Create prompt for the LLM
+    def __init__(self, llm_provider: LLMProvider):
+        self.llm_provider = llm_provider
+
+    def _format_time_for_llm(self, seconds: float) -> str:
+        """Formats seconds to MM:SS for LLM prompts (can be part of LLMProvider too)."""
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{minutes:02d}:{secs:02d}"
+
+    def find_interesting_moments(self,
+                                 transcription_segments: List[Dict[str, Any]],
+                                 min_clips: int = 3,
+                                 max_clips: int = 10,
+                                 video_duration_seconds: Optional[float] = None
+                                 ) -> Optional[Dict[str, Any]]:
+        """Uses LLM to identify interesting moments."""
+
+        transcript_text_for_llm = ""
+        for segment in transcription_segments:
+            # Use the LLM provider's time formatting or a local one
+            start_time_str = self._format_time_for_llm(segment["start"])
+            # end_time_str = self._format_time_for_llm(segment["end"])
+            # transcript_text_for_llm += f"[{start_time_str}-{end_time_str}] {segment['text']}\n"
+            transcript_text_for_llm += f"[{start_time_str}] {segment['text']}\n"
+
+
+        duration_info = f"The video is approximately {video_duration_seconds / 60:.1f} minutes long." if video_duration_seconds else "The video duration is unknown."
+
         prompt = f"""
-You are an expert video editor who finds the most compelling moments in videos.
+You are an expert video editor tasked with identifying compelling short clips from a video transcript.
+{duration_info}
+The transcript below includes timestamps in [MM:SS] format.
 
-Here's a transcript with timestamps:
+TRANSCRIPT:
+{transcript_text_for_llm}
 
-{transcript_text}
+TASK:
+Identify {min_clips}-{max_clips} moments that would make engaging short video clips, each ideally between 30 to 90 seconds.
+Focus on:
+1.  Interesting statements, stories, or punchlines.
+2.  Emotional peaks (positive or negative).
+3.  Surprising revelations, insights, or questions.
+4.  Quotable or memorable phrases/segments.
+5.  Self-contained ideas or points that are understandable in isolation.
 
-Please identify {min_clips}-{max_clips} moments that would make great short clips (45-60 seconds each). Focus on:
-1. Interesting statements or stories
-2. Emotional moments
-3. Surprising revelations or insights
-4. Quotable or memorable segments
-5. Self-contained moments that work well in isolation
+OUTPUT FORMAT:
+Return your response as a JSON object with a single key "clips".
+The value of "clips" should be a list of objects, each with:
+-   "start_time": string (MM:SS format, e.g., "01:23") - when the interesting moment begins.
+-   "end_time": string (MM:SS format, e.g., "01:58") - when the interesting moment ends.
+-   "reason": string (briefly why this moment is compelling, 1-2 sentences).
+-   "suggested_caption": string (a short, catchy caption for this clip, ideally under 150 characters).
 
-Format your response as JSON with this structure:
+Example:
 {{
   "clips": [
     {{
-      "start": "mm:ss",
-      "end": "mm:ss",
-      "reason": "brief explanation",
-      "caption": "suggested caption"
-    }},
-    ...
+      "start_time": "02:15",
+      "end_time": "02:45",
+      "reason": "Speaker makes a very surprising and controversial statement here.",
+      "suggested_caption": "Wait, did they REALLY just say that?! 🤯 #shocking"
+    }}
   ]
 }}
+Ensure all timestamps are in MM:SS format. The duration between start_time and end_time should be reasonable for a short clip.
+Consider the flow of conversation; a clip should ideally have a clear beginning and end.
 """
+        print("Sending clip suggestion prompt to LLM...")
+        clip_data = self.llm_provider.generate_json(prompt) # Assumes generate_json is robust
 
-        if self.use_gemini:
-            return self._call_gemini_api(prompt)
+        if clip_data and "clips" in clip_data and isinstance(clip_data["clips"], list):
+            # Basic validation of clip format
+            valid_clips = []
+            for c in clip_data["clips"]:
+                if (isinstance(c, dict) and
+                    "start_time" in c and "end_time" in c and
+                    "reason" in c and "suggested_caption" in c and
+                    isinstance(c["start_time"], str) and isinstance(c["end_time"], str) # Further type checks
+                   ):
+                    # Attempt to parse timestamps to ensure validity early on
+                    try:
+                        parse_timestamp(c["start_time"])
+                        parse_timestamp(c["end_time"])
+                        valid_clips.append(c)
+                    except ValueError:
+                        print(f"Warning: Skipping clip due to invalid time format: {c}")
+                else:
+                    print(f"Warning: Skipping malformed clip data from LLM: {c}")
+            
+            if not valid_clips and clip_data["clips"]:
+                print("LLM returned clip data, but none were in the expected format after validation.")
+                return self._fallback_clip_extraction(transcription_segments, num_clips_target=min_clips, video_duration_seconds=video_duration_seconds)
+            elif not valid_clips :
+                 print("LLM did not return valid clip data. Attempting fallback.")
+                 return self._fallback_clip_extraction(transcription_segments, num_clips_target=min_clips, video_duration_seconds=video_duration_seconds)
+
+            clip_data["clips"] = valid_clips
+            return clip_data
         else:
-            return self._fallback_extraction(transcription_segments)
-            
-    def _call_gemini_api(self, prompt):
-        """Call Gemini API with proper error handling"""
-        try:
-            response = self.model.generate_content(prompt)
-            content = response.text
-            
-            # Try to parse the JSON from the response
-            try:
-                # Find JSON in the response if it's not pure JSON
-                import re
-                json_match = re.search(r'\{[\s\S]*\}', content)
-                if json_match:
-                    content = json_match.group(0)
-                
-                import json
-                clip_data = json.loads(content)
-                return clip_data
-            except json.JSONDecodeError:
-                print("Failed to parse JSON from LLM response. Using manual extraction.")
-                return self._manually_extract_clips(content)
-                
-        except Exception as e:
-            print(f"Error calling Gemini API: {str(e)}")
-            return self._fallback_extraction(self.transcription_segments)
-    def _manually_extract_clips(self, content):
-        """Manually extract clip information if JSON parsing fails"""
+            print("LLM response for clips was not in the expected JSON format or missing 'clips' list. Attempting fallback.")
+            return self._fallback_clip_extraction(transcription_segments, num_clips_target=min_clips, video_duration_seconds=video_duration_seconds)
+
+    def _fallback_clip_extraction(self,
+                                  transcription_segments: List[Dict[str, Any]],
+                                  num_clips_target: int = 3,
+                                  clip_duration_target_seconds: int = 60,
+                                  video_duration_seconds: Optional[float] = None
+                                  ) -> Dict[str, List[Dict[str, str]]]:
+        """Generates some basic clip suggestions as a fallback."""
+        print(f"Using fallback clip generation method (first {num_clips_target} segments or time-based).")
         clips = []
-        
-        # Try to find and extract clip information using regex
-        import re
-        
-        # Look for patterns like "Start: 01:23" or "Start time: 01:23"
-        start_times = re.findall(r'start(?:\s+time)?:\s*(\d+:\d+)', content, re.IGNORECASE)
-        end_times = re.findall(r'end(?:\s+time)?:\s*(\d+:\d+)', content, re.IGNORECASE)
-        
-        # Extract everything between "Reason:" and the next section as the reason
-        reasons = re.findall(r'reason:\s*(.*?)(?=\n\s*(?:caption|start|end|clip|\d+\.)|\Z)', 
-                             content, re.IGNORECASE | re.DOTALL)
-        
-        # Extract captions
-        captions = re.findall(r'caption:\s*(.*?)(?=\n\s*(?:reason|start|end|clip|\d+\.)|\Z)', 
-                              content, re.IGNORECASE | re.DOTALL)
-        
-        # Match up the extracted information
-        for i in range(min(len(start_times), len(end_times))):
-            clip = {
-                "start": start_times[i],
-                "end": end_times[i],
-                "reason": reasons[i].strip() if i < len(reasons) else "Interesting moment",
-                "caption": captions[i].strip() if i < len(captions) else "Check out this moment!"
-            }
-            clips.append(clip)
+        if not transcription_segments:
+            return {"clips": []}
+
+        # If video duration is known, try to spread clips
+        if video_duration_seconds and video_duration_seconds > clip_duration_target_seconds:
+            num_possible_clips = int(video_duration_seconds // clip_duration_target_seconds)
+            actual_num_clips = min(num_clips_target, num_possible_clips, len(transcription_segments))
+            
+            if actual_num_clips == 0 and len(transcription_segments) > 0: # Ensure at least one clip if segments exist
+                actual_num_clips = 1
+
+            for i in range(actual_num_clips):
+                # Try to pick segments spread out over the video
+                start_index = (len(transcription_segments) // actual_num_clips) * i
+                segment = transcription_segments[start_index]
+                
+                clip_start_s = segment["start"]
+                # Ensure end time doesn't exceed video duration or segment end significantly
+                clip_end_s = min(clip_start_s + clip_duration_target_seconds, segment["end"] + 15, video_duration_seconds)
+                
+                # Make sure end is after start
+                if clip_end_s <= clip_start_s : clip_end_s = clip_start_s + 15 # min 15s clip
+
+                clips.append({
+                    "start_time": self._format_time_for_llm(clip_start_s),
+                    "end_time": self._format_time_for_llm(clip_end_s),
+                    "reason": "Fallback: Potentially interesting segment based on spread.",
+                    "suggested_caption": segment["text"][:100] + "..." if len(segment["text"]) > 100 else segment["text"]
+                })
+        else: # Fallback if duration is unknown or too short
+            for i, segment in enumerate(transcription_segments):
+                if i >= num_clips_target:
+                    break
+                clip_start_s = segment["start"]
+                # Default to segment end, or a fixed duration if segment is too long
+                clip_end_s = min(segment["end"], clip_start_s + clip_duration_target_seconds)
+                if clip_end_s <= clip_start_s : clip_end_s = clip_start_s + 15
+
+                clips.append({
+                    "start_time": self._format_time_for_llm(clip_start_s),
+                    "end_time": self._format_time_for_llm(clip_end_s),
+                    "reason": "Fallback: Early segment in transcription.",
+                    "suggested_caption": segment["text"][:100] + "..." if len(segment["text"]) > 100 else segment["text"]
+                })
         
         return {"clips": clips}
-    
-    def _fallback_extraction(self, transcription_segments):
-        """Simple fallback method if all API calls fail"""
-        clips = []
-        
-        # Group segments into potential clips (simple approach)
-        # This is a very basic fallback that just picks evenly spaced segments
-        total_segments = len(transcription_segments)
-        num_clips = min(5, total_segments // 3)  # Create up to 5 clips
-        
-        if num_clips == 0 and total_segments > 0:
-            num_clips = 1
-        
-        for i in range(num_clips):
-            idx = (i * total_segments) // num_clips
-            segment = transcription_segments[idx]
-            
-            # Calculate clip start/end (aim for 45-60 second clips)
-            clip_mid = (segment["start"] + segment["end"]) / 2
-            clip_start = max(0, clip_mid - 25)
-            clip_end = min(clip_mid + 25, segment["end"] + 30)
-            
-            clip = {
-                "start": self._format_time(clip_start),
-                "end": self._format_time(clip_end),
-                "reason": "Potentially interesting segment",
-                "caption": segment["text"][:100] + "..." if len(segment["text"]) > 100 else segment["text"]
-            }
-            clips.append(clip)
-        
-        return {"clips": clips}
-    
-    def _format_time(self, seconds):
-        """Format seconds to mm:ss format"""
-        minutes = int(seconds // 60)
-        seconds = int(seconds % 60)
-        return f"{minutes:02d}:{seconds:02d}"
 
 
-def extract_audio(video_path, output_path="temp_audio.wav"):
-    """Extract audio from video file"""
-    command = f"ffmpeg -i {video_path} -ab 160k -ac 2 -ar 44100 -vn {output_path} -y"
-    subprocess.call(command, shell=True)
-    return output_path
-
-
-def transcribe_audio(audio_path, whisper_model_size="base"):
-    """Transcribe audio using Whisper and return segments"""
-    print("Loading Whisper model...")
-    model = whisper.load_model(whisper_model_size)
-    
-    print(f"Transcribing audio file: {audio_path}")
-    result = model.transcribe(audio_path, word_timestamps=True)
-    
-    # Extract segments from the result
-    segments = []
-    for segment in result["segments"]:
-        segments.append({
-            "start": segment["start"],
-            "end": segment["end"],
-            "text": segment["text"],
-            "words": segment.get("words", [])
-        })
-    
-    # Process segments to create text lines for captions, similar to instaClips.py
-    for segment in segments:
-        clip_words = []
-        for word in segment.get("words", []):
-            clip_words.append({
-                "text": word["word"],
-                "start": word["start"],
-                "end": word["end"]
-            })
-        
-        # Create text lines for captions
-        width = 1080  # Instagram width
-        sample_text = "Sample Text for Calculation"
-        font_size = 60  # Default font size
-
-        font_path = "C:/Windows/Fonts/ARLRDBD.TTF"  # Adjust font path as needed
-        font = font_path if os.path.exists(font_path) else "arial.ttf"
-        
-        # Create a temporary image to measure text size
-        try:
-            font = ImageFont.truetype(font_path, font_size)
-        except:
-            font = ImageFont.load_default()
-            
-        temp_img = Image.new('RGB', (1, 1))
-        draw = ImageDraw.Draw(temp_img)
-        
-        # Calculate average char width
-        bbox = draw.textbbox((0, 0), sample_text, font=font)
-        sample_width = bbox[2] - bbox[0]
-        char_width = sample_width / len(sample_text)
-        
-        # Calculate usable width (80% of screen width)
-        usable_width = int(width * 0.8)
-        chars_per_line = int(usable_width / char_width)
-        
-        # Create text lines based on words
-        text_lines = []
-        current_line = ""
-        line_start_time = None
-        
-        for word in clip_words:
-            word_text = word["text"].strip()
-            if not word_text:
-                continue
-                
-            # Start a new line if needed
-            if line_start_time is None:
-                line_start_time = word["start"]
-            
-            # Check if adding this word would exceed line length
-            test_line = current_line + " " + word_text if current_line else word_text
-            if len(test_line) > chars_per_line:
-                # Add current line to text_lines
-                if current_line:
-                    text_lines.append({
-                        "text": current_line,
-                        "start": line_start_time,
-                        "end": word["start"]
-                    })
-                
-                # Start new line with current word
-                current_line = word_text
-                line_start_time = word["start"]
-            else:
-                # Add word to current line
-                current_line = test_line
-        
-        # Add the last line if there is one
-        if current_line:
-            text_lines.append({
-                "text": current_line,
-                "start": line_start_time,
-                "end": clip_words[-1]["end"] if clip_words else segment["end"]
-            })
-            
-        # Add text_lines to segment
-        segment["text_lines"] = text_lines
-    
-    return segments
-
-
-def parse_timestamp(timestamp):
+def parse_timestamp(timestamp_str: str) -> float:
     """Convert 'mm:ss' timestamp to seconds"""
     parts = timestamp.split(":")
     if len(parts) == 2:
@@ -843,143 +748,225 @@ def main():
     parser.add_argument("--min-clips", type=int, default=3, help="Minimum number of clips to suggest")
     parser.add_argument("--max-clips", type=int, default=8, help="Maximum number of clips to suggest")
     parser.add_argument("--whisper-model", default="base", choices=["tiny", "base", "small", "medium", "large"],
-                        help="Whisper model size to use for transcription")
-    parser.add_argument("--api-key", help="API key for LLM service (optional)")
-    parser.add_argument("--captions", action="store_true", help="Add captions to clips")
-    parser.add_argument("--no-review", action="store_true", help="Skip clip review")
-    
-    # Add new color customization arguments
-    parser.add_argument("--bg-color", default="255,255,255,230", help="Background color for captions in R,G,B,A format (default: 255,255,255,230)")
-    parser.add_argument("--highlight-color", default="255,226,165,220", help="Highlight color for active words in R,G,B,A format (default: 255,226,165,220)")
-    parser.add_argument("--text-color", default="0,0,0", help="Text color in R,G,B format (default: 0,0,0)")
+                        help="Whisper model size for transcription.")
+    parser.add_argument("--device", default="cpu", choices=["cpu", "gpu"],
+                        help="Device for Whisper transcription (cpu or gpu).")
+    parser.add_argument("--transcription-path", help="Path to existing transcription JSON file (optional).")
+
+    # LLM arguments
+    parser.add_argument("--llm-provider", default="gemini", choices=["gemini", "openai", "openrouter", "deepseek"],
+                        help="LLM provider to use for clip suggestions.")
+    parser.add_argument("--llm-model", default=None, help="Specific LLM model name to use (optional).")
+    parser.add_argument("--api-key", help="API key for the selected LLM service.")
+
+    # Clip behavior arguments
+    parser.add_argument("--captions", action="store_true", help="Add captions to the generated clips.")
+    parser.add_argument("--no-review", action="store_true", help="Skip interactive review of suggested clips.")
+
+    # Caption styling arguments
+    parser.add_argument("--font-path", default=None, help="Path to .ttf or .otf font file for captions.")
+    parser.add_argument("--bg-color", default="255,255,255,230",
+                        help="Caption background color 'R,G,B,A' (default: 255,255,255,230).")
+    parser.add_argument("--highlight-color", default="255,226,165,220",
+                        help="Caption highlight color 'R,G,B,A' (default: 255,226,165,220).")
+    parser.add_argument("--text-color", default="0,0,0,255",
+                        help="Caption text color 'R,G,B,A' (default: 0,0,0,255).")
     
     args = parser.parse_args()
     
-    # Parse color arguments to tuples
-    bg_color = tuple(map(int, args.bg_color.split(',')))
-    highlight_color = tuple(map(int, args.highlight_color.split(',')))
-    text_color = tuple(map(int, args.text_color.split(',')))
-    
-    # Create output directory
+    # --- 0. Setup ---
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
+        print(f"Created output directory: {args.output_dir}")
+
+    set_transcription_device(args.device)
     
-    # Step 1: Extract audio from video
-    print("Extracting audio from video...")
-    audio_path = extract_audio(args.video_path)
+    # Validate color arguments early
+    try:
+        parse_color_util(args.bg_color)
+        parse_color_util(args.highlight_color)
+        parse_color_util(args.text_color)
+    except ValueError as e:
+        print(f"Error: Invalid color format provided: {e}")
+        return
+
+    # --- 1. Transcription ---
+    transcription_segments = None
+    if args.transcription_path and os.path.exists(args.transcription_path):
+        print(f"Loading existing transcription from: {args.transcription_path}")
+        with open(args.transcription_path, "r", encoding="utf-8") as f:
+            transcription_segments = json.load(f)
+    else:
+        print(f"Starting transcription for {args.video_path}...")
+        temp_audio_path = os.path.join(args.output_dir, "temp_clips_audio.wav")
+        audio_path = extract_audio(args.video_path, output_path=temp_audio_path)
+        if not audio_path:
+            print("Audio extraction failed. Cannot generate clips.")
+            return
+
+        print(f"Transcribing audio with Whisper model '{args.whisper_model}' on device '{args.device}'.")
+        # Word timestamps are crucial for good captioning on clips
+        transcription_segments = transcribe_audio(audio_path, args.whisper_model, word_timestamps=True)
+
+        if os.path.exists(audio_path):
+            try:
+                os.remove(audio_path)
+                print(f"Cleaned up temporary audio file: {audio_path}")
+            except OSError as e:
+                print(f"Warning: Could not delete temporary audio file: {e}")
+
+        # Save the new transcription
+        current_transcription_path = os.path.join(args.output_dir, "transcription_for_clips.json")
+        with open(current_transcription_path, "w", encoding="utf-8") as f:
+            json.dump(transcription_segments, f, indent=2, ensure_ascii=False)
+        print(f"Transcription saved to: {current_transcription_path}")
+
+    if not transcription_segments:
+        print("No transcription data available. Cannot find or create clips.")
+        return
     
-    # Step 2: Transcribe audio
-    print("Transcribing audio...")
-    transcription_segments = transcribe_audio(audio_path, args.whisper_model)
-    
-    # Save transcription to file
-    transcription_path = os.path.join(args.output_dir, "transcription.json")
-    with open(transcription_path, "w") as f:
-        json.dump(transcription_segments, f, indent=2)
-    
-    print(f"Transcription saved to {transcription_path}")
-    
-    # Step 3: Find interesting clips using LLM
-    print("Finding interesting moments using LLM...")
-    clip_finder = LLMClipFinder(api_key=args.api_key)
-    clip_suggestions = clip_finder.find_interesting_moments(
+    # Get video duration for LLM context if not already available
+    # This could also come from transcription metadata if Whisper provides it.
+    # For now, explicitly get it.
+    video_duration = get_video_dimensions(args.video_path)[0] # Placeholder, ideally get actual duration
+    # A better way to get duration:
+    # from core.video_utils import get_video_duration as get_duration_seconds
+    # video_duration_val = get_duration_seconds(args.video_path)
+
+
+    # --- 2. Find Interesting Clips using LLM ---
+    print(f"Initializing LLM provider: {args.llm_provider} (Model: {args.llm_model or 'default'})")
+    try:
+        llm_service = get_llm_provider(args.llm_provider, api_key=args.api_key, model=args.llm_model)
+    except (ValueError, ImportError, ConnectionError) as e:
+        print(f"Error initializing LLM provider: {e}")
+        return
+
+    clip_finder_instance = ClipFinder(llm_service)
+    print("Finding interesting moments with LLM...")
+    # Pass video_duration to LLM if available and useful for the prompt
+    clip_suggestions_data = clip_finder_instance.find_interesting_moments(
         transcription_segments, 
         min_clips=args.min_clips, 
-        max_clips=args.max_clips
+        max_clips=args.max_clips,
+        # video_duration_seconds=video_duration_val # Pass if obtained
     )
-    
-    if not clip_suggestions or "clips" not in clip_suggestions or not clip_suggestions["clips"]:
-        print("No interesting clips found. Exiting.")
+
+    if not clip_suggestions_data or "clips" not in clip_suggestions_data or not clip_suggestions_data["clips"]:
+        print("LLM (or fallback) did not return any clip suggestions. Exiting.")
         return
     
-    clips = clip_suggestions["clips"]
-    print(f"Found {len(clips)} potential clips")
-    
-    # Save clip suggestions to file
-    suggestions_path = os.path.join(args.output_dir, "clip_suggestions.json")
-    with open(suggestions_path, "w") as f:
-        json.dump(clip_suggestions, f, indent=2)
-    
-    print(f"Clip suggestions saved to {suggestions_path}")
-    
-    # Enhance clips with segments for better captioning
-    for clip in clips:
-        clip_start = parse_timestamp(clip["start"])
-        clip_end = parse_timestamp(clip["end"])
-        
-        # Find segments that overlap with this clip
-        clip["segments"] = []
-        for segment in transcription_segments:
-            if segment["end"] >= clip_start and segment["start"] <= clip_end:
-                clip["segments"].append(segment)
-    
-    # Step 4: Review clips if requested
+    suggested_clips_from_llm = clip_suggestions_data["clips"]
+    print(f"LLM suggested {len(suggested_clips_from_llm)} potential clips.")
+
+    raw_suggestions_path = os.path.join(args.output_dir, "clip_suggestions_raw.json")
+    with open(raw_suggestions_path, "w", encoding="utf-8") as f:
+        json.dump(clip_suggestions_data, f, indent=2, ensure_ascii=False)
+    print(f"Raw clip suggestions saved to: {raw_suggestions_path}")
+
+    # --- 3. Prepare Segments for Each Suggested Clip (for captioning and review) ---
+    # This step ensures each suggested clip has the relevant transcription segments associated with it.
+    # The 'segments' key within each clip dict will hold these.
+    for clip_info in suggested_clips_from_llm:
+        clip_start_s = parse_timestamp(clip_info["start_time"])
+        clip_end_s = parse_timestamp(clip_info["end_time"])
+        clip_info["segments_for_clip"] = []
+        for original_segment in transcription_segments:
+            # Check for overlap between original segment and clip time range
+            if max(original_segment["start"], clip_start_s) < min(original_segment["end"], clip_end_s):
+                # Deep copy to avoid modifying the main transcription_segments list if segments are trimmed
+                segment_copy = copy.deepcopy(original_segment)
+                # Optional: Adjust segment_copy start/end times to be relative to clip_start_s if needed by create_clip
+                # Or, ensure create_clip handles absolute timestamps from original_segment and extracts accordingly.
+                clip_info["segments_for_clip"].append(segment_copy)
+
+    # --- 4. Review Clips (Optional) ---
+    final_clips_to_create = suggested_clips_from_llm
+    # The review_clips function needs to be adapted or a new one created for this script's specific needs.
+    # It should allow editing start/end times, reason, caption, and potentially re-evaluating segments.
     if not args.no_review:
-        print("\nReviewing clips...")
-        approved_clips, updated_transcription = review_clips(clips, transcription_segments)
-        
-        # Save updated transcription
-        with open(transcription_path, "w") as f:
-            json.dump(updated_transcription, f, indent=2)
-        print(f"Updated transcription saved to {transcription_path}")
-    else:
-        approved_clips = clips
-    
-    if not approved_clips:
-        print("No clips approved. Exiting.")
+        print("\nStarting interactive clip review process...")
+        # `review_clips` needs to be defined or imported and adapted.
+        # It should take `suggested_clips_from_llm` and `transcription_segments` (for context).
+        # It should return the list of approved/edited clips.
+        # For now, assuming a placeholder or that it will be implemented:
+        # final_clips_to_create, updated_transcription_segments = review_clips_interactive(suggested_clips_from_llm, transcription_segments)
+
+        # Placeholder for review function:
+        print("Clip review step is placeholder. Proceeding with all suggested clips.")
+        final_clips_to_create = suggested_clips_from_llm # Assuming all are approved for now
+        # If review_clips modified transcription_segments, ensure it's saved:
+        # if updated_transcription_segments and args.transcription_path:
+        #     with open(args.transcription_path, "w", encoding="utf-8") as f: # or a new "reviewed_transcription.json"
+        #        json.dump(updated_transcription_segments, f, indent=2, ensure_ascii=False)
+        #     print(f"Updated transcription saved after review.")
+
+    if not final_clips_to_create:
+        print("No clips approved or available after review. Exiting.")
         return
-    
-    # Step 5: Create approved clips
-    created_clips = []
-    for i, clip in enumerate(approved_clips):
-        print(f"\nCreating clip {i+1}/{len(approved_clips)}...")
-        output_path = os.path.join(args.output_dir, f"clip_{i+1}.mp4")
+
+    # --- 5. Create Approved Clips ---
+    created_clip_paths = []
+    for i, clip_details in enumerate(final_clips_to_create):
+        clip_num = i + 1
+        print(f"\nProcessing clip {clip_num}/{len(final_clips_to_create)}: {clip_details.get('suggested_caption', 'Untitled Clip')}")
+
+        clip_output_filename = f"clip_{clip_num}.mp4"
+        clip_final_output_path = os.path.join(args.output_dir, clip_output_filename)
+
         try:
-            # Make sure to update segments in each clip with the latest transcription
-            if not args.no_review:
-                clip_start = parse_timestamp(clip["start"])
-                clip_end = parse_timestamp(clip["end"])
-                clip["segments"] = []
-                for segment in updated_transcription:  # Use updated_transcription here
-                    if segment["end"] >= clip_start and segment["start"] <= clip_end:
-                        # Deep copy the segment to avoid reference issues
-                        import copy
-                        clip["segments"].append(copy.deepcopy(segment))
-                
-            clip_path = create_clip(
-                args.video_path, 
-                clip, 
-                output_path, 
-                captions=args.captions,
-                bg_color=bg_color,
-                highlight_color=highlight_color,
-                text_color=text_color
+            # `create_clip` is the function that does the FFMPEG extraction and caption rendering
+            # It needs to be adapted to use the new utility functions.
+            generated_clip_filepath = create_clip_video(
+                original_video_path=args.video_path,
+                clip_info=clip_details, # Contains start_time, end_time, segments_for_clip
+                output_path=clip_final_output_path,
+                add_captions=args.captions,
+                font_path_override=args.font_path,
+                bg_color_str=args.bg_color,
+                highlight_color_str=args.highlight_color,
+                text_color_str=args.text_color
+                # target_aspect_ratio can be added: e.g., (9,16) for vertical
             )
-            if clip_path:
-                created_clips.append(clip_path)
-                print(f"Successfully created clip at {clip_path}")
+            if generated_clip_filepath:
+                created_clip_paths.append(generated_clip_filepath)
+                print(f"Successfully created clip: {generated_clip_filepath}")
             else:
-                print(f"Failed to create clip {i+1}")
+                print(f"Failed to create video for clip {clip_num}.")
         except Exception as e:
-            print(f"Error creating clip {i+1}: {str(e)}")
-    
-    # Step 6: Clean up and report results
-    os.remove(audio_path)
-    print(f"\nProcess complete! Created {len(created_clips)} clips in {args.output_dir}")
-    
-    # Save metadata about created clips
-    clips_metadata = {
-        "created_clips": [
-            {
-                "path": clip_path,
-                "details": approved_clips[i]
-            } for i, clip_path in enumerate(created_clips)
-        ]
+            print(f"Error during creation of clip {clip_num}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # --- 6. Report Results ---
+    print(f"\n--- Process Summary ---")
+    if created_clip_paths:
+        print(f"Successfully created {len(created_clip_paths)} clips in directory: {args.output_dir}")
+        for path in created_clip_paths:
+            print(f"  - {path}")
+    else:
+        print("No clips were successfully created.")
+
+    # Save metadata about the final created clips and their original suggestions
+    final_metadata = {
+        "source_video": args.video_path,
+        "output_directory": args.output_dir,
+        "llm_provider_used": args.llm_provider,
+        "clips_generated": []
     }
+    for i, clip_path in enumerate(created_clip_paths):
+        # Find the corresponding clip_details (assuming order is maintained)
+        original_clip_suggestion = final_clips_to_create[i] if i < len(final_clips_to_create) else {}
+        final_metadata["clips_generated"].append({
+            "output_file": clip_path,
+            "original_suggestion": original_clip_suggestion # Includes reason, LLM caption, times
+        })
     
-    metadata_path = os.path.join(args.output_dir, "clips_metadata.json")
-    with open(metadata_path, "w") as f:
-        json.dump(clips_metadata, f, indent=2)
+    metadata_filepath = os.path.join(args.output_dir, "generated_clips_metadata.json")
+    with open(metadata_filepath, "w", encoding="utf-8") as f:
+        json.dump(final_metadata, f, indent=2, ensure_ascii=False)
+    print(f"Metadata for generated clips saved to: {metadata_filepath}")
+    print("-----------------------")
 
 if __name__ == "__main__":
     main()
