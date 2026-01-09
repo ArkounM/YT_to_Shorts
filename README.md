@@ -26,10 +26,28 @@ pip install opencv-python numpy moviepy openai-whisper Pillow google-generativea
 - FFmpeg (for video processing)
   - Windows: Download from [FFmpeg website](https://ffmpeg.org/download.html) or if you are using a conda env you can enter:
 
-  conda install -c conda-forge ffmepg
+  conda install -c conda-forge ffmpeg
 
   - Linux: `sudo apt-get install ffmpeg`
   - MacOS: `brew install ffmpeg`
+
+### Linux-Specific Setup
+
+If you're running on a **headless Linux server** (no GUI), you need to install system fonts for caption rendering:
+
+```bash
+# Install common fonts (choose one or more)
+sudo apt-get install fonts-liberation      # Recommended
+sudo apt-get install fonts-dejavu-core     # Alternative
+sudo apt-get install fonts-ubuntu          # Alternative
+```
+
+The script will automatically detect and use available system fonts. It checks for fonts in common Linux locations:
+- `/usr/share/fonts/truetype/liberation/`
+- `/usr/share/fonts/truetype/dejavu/`
+- `/usr/share/fonts/truetype/ubuntu/`
+
+**Note:** The script now runs a dependency check on startup that will verify FFmpeg and fonts are properly installed.
 
 ### API Key
 - Get a Google Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
@@ -110,6 +128,46 @@ output_folder/
 - Fallback for font loading
 - API error management
 - Temporary file cleanup
+
+## Troubleshooting
+
+### Linux Issues
+
+**Script runs but produces no output:**
+1. Check that FFmpeg is installed: `ffmpeg -version`
+2. Run the script - it will now perform a dependency check at startup
+3. Install missing fonts if warned:
+   ```bash
+   sudo apt-get install fonts-liberation
+   ```
+
+**"No system font found" warning:**
+- Captions will still work but may not look optimal
+- Install fonts using the commands in the Linux-Specific Setup section above
+
+**Virtual Environment:**
+- You don't need to run from a virtual environment, but if you created one, make sure to activate it:
+  ```bash
+  source venv/bin/activate  # Linux/Mac
+  venv\Scripts\activate     # Windows
+  ```
+
+**File paths:**
+- Both Linux (`/home/user/video.mp4`) and Windows (`C:\Users\video.mp4`) paths are supported
+- Use quotes around paths with spaces: `python generateClips.py "/path/with spaces/video.mp4"`
+
+## Cross-Platform Support
+
+This script now fully supports:
+- ✅ Windows
+- ✅ Linux (including headless servers)
+- ✅ MacOS
+
+The script automatically:
+- Detects your operating system
+- Finds appropriate system fonts
+- Handles file paths correctly
+- Checks dependencies on startup
 
 ## License
 

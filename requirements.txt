@@ -1,10 +1,7 @@
-## Prerequisites
-
-```bash
-pip install opencv-python numpy moviepy whisper textwrap3 Pillow
-```
-
-You'll also need FFmpeg installed on your system:
-- **Windows**: Download from [FFmpeg website](https://ffmpeg.org/download.html) and add to PATH
-- **Linux**: `sudo apt-get install ffmpeg`
-- **macOS**: `brew install ffmpeg`
+opencv-python
+numpy
+moviepy
+openai-whisper
+Pillow
+google-generativeai
+textwrap3

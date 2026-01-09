@@ -9,9 +9,113 @@ import requests
 import argparse
 import time
 import textwrap
+import platform
 from typing import List, Dict, Any
 import google.generativeai as genai
 from collections import deque
+
+# Cross-platform font detection
+def get_font_path():
+    """Get appropriate font path based on the operating system"""
+    system = platform.system()
+
+    if system == "Windows":
+        # Try common Windows fonts
+        font_paths = [
+            "C:/Windows/Fonts/ARLRDBD.TTF",  # Arial Rounded Bold
+            "C:/Windows/Fonts/arialbd.ttf",   # Arial Bold
+            "C:/Windows/Fonts/arial.ttf"      # Arial Regular
+        ]
+    elif system == "Darwin":  # macOS
+        font_paths = [
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/Library/Fonts/Arial.ttf"
+        ]
+    else:  # Linux and other Unix-like systems
+        font_paths = [
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"
+        ]
+
+    # Find the first font that exists
+    for font_path in font_paths:
+        if os.path.exists(font_path):
+            print(f"Using font: {font_path}")
+            return font_path
+
+    # If no font found, return None and we'll use default
+    print("Warning: No system font found. Using PIL default font (captions may not look optimal).")
+    return None
+
+
+def quote_path(path):
+    """Properly quote a file path for use in shell commands"""
+    # On Windows, we need to handle both forward and backslashes
+    # On Unix-like systems, just escape spaces and special chars
+    if platform.system() == "Windows":
+        # Use forward slashes and wrap in quotes
+        return f'"{path}"'
+    else:
+        # On Unix-like systems, escape spaces and special characters
+        # Using quotes is simpler and more reliable
+        return f"'{path}'"
+
+
+def check_dependencies():
+    """Check if required dependencies are installed and working"""
+    issues = []
+
+    # Check FFmpeg
+    try:
+        result = subprocess.run(['ffmpeg', '-version'],
+                              capture_output=True,
+                              text=True,
+                              timeout=5)
+        if result.returncode == 0:
+            print("✓ FFmpeg is installed and working")
+        else:
+            issues.append("FFmpeg is installed but returned an error")
+    except FileNotFoundError:
+        issues.append("FFmpeg is not installed or not in PATH")
+        print("\n⚠ ERROR: FFmpeg is not installed!")
+        print("Please install FFmpeg:")
+        if platform.system() == "Linux":
+            print("  sudo apt-get install ffmpeg")
+        elif platform.system() == "Darwin":
+            print("  brew install ffmpeg")
+        elif platform.system() == "Windows":
+            print("  Download from https://ffmpeg.org/download.html")
+    except Exception as e:
+        issues.append(f"Error checking FFmpeg: {e}")
+
+    # Check if we can find a font
+    font_path = get_font_path()
+    if font_path:
+        print("✓ System font found")
+    else:
+        print("⚠ Warning: No system font found, captions will use default font")
+        issues.append("No system font found (captions may not look optimal)")
+
+    # Check OpenCV
+    try:
+        # Check if OpenCV can access video codecs
+        fourcc_test = cv2.VideoWriter_fourcc(*'avc1')
+        print("✓ OpenCV is working")
+    except Exception as e:
+        issues.append(f"OpenCV issue: {e}")
+
+    # Report system info
+    print(f"\nSystem Information:")
+    print(f"  OS: {platform.system()} {platform.release()}")
+    print(f"  Python: {platform.python_version()}")
+
+    return len(issues) == 0, issues
+
 
 # Free LLM API options - we'll use Google Gemini API with a rate limit for free tier
 # Alternative options include HuggingFace Inference API or other free tier services
@@ -177,8 +281,11 @@ Format your response as JSON with this structure:
 
 def extract_audio(video_path, output_path="temp_audio.wav"):
     """Extract audio from video file"""
-    command = f"ffmpeg -i {video_path} -ab 160k -ac 2 -ar 44100 -vn {output_path} -y"
-    subprocess.call(command, shell=True)
+    command = f"ffmpeg -i {quote_path(video_path)} -ab 160k -ac 2 -ar 44100 -vn {quote_path(output_path)} -y"
+    print(f"Running: {command}")
+    result = subprocess.call(command, shell=True)
+    if result != 0:
+        print(f"Warning: FFmpeg audio extraction returned code {result}")
     return output_path
 
 
@@ -215,13 +322,16 @@ def transcribe_audio(audio_path, whisper_model_size="base"):
         sample_text = "Sample Text for Calculation"
         font_size = 60  # Default font size
 
-        font_path = "C:/Windows/Fonts/ARLRDBD.TTF"  # Adjust font path as needed
-        font = font_path if os.path.exists(font_path) else "arial.ttf"
-        
+        font_path = get_font_path()
+
         # Create a temporary image to measure text size
         try:
-            font = ImageFont.truetype(font_path, font_size)
-        except:
+            if font_path:
+                font = ImageFont.truetype(font_path, font_size)
+            else:
+                font = ImageFont.load_default()
+        except Exception as e:
+            print(f"Warning: Could not load font, using default. Error: {e}")
             font = ImageFont.load_default()
             
         temp_img = Image.new('RGB', (1, 1))
@@ -499,9 +609,12 @@ def create_clip(video_path, clip, output_path, captions=True, bg_color=(255, 255
     
     # Extract the clip from the original video with FFmpeg
     temp_video = f"{output_path}_temp.mp4"
-    extract_cmd = f"ffmpeg -ss {start_time} -i {video_path} -t {duration} -c:v copy -c:a copy {temp_video} -y"
+    extract_cmd = f"ffmpeg -ss {start_time} -i {quote_path(video_path)} -t {duration} -c:v copy -c:a copy {quote_path(temp_video)} -y"
     print(f"Extracting clip: {extract_cmd}")
-    subprocess.call(extract_cmd, shell=True)
+    result = subprocess.call(extract_cmd, shell=True)
+    if result != 0:
+        print(f"Warning: FFmpeg clip extraction returned code {result}")
+        return None
     
     # Now open the extracted segment
     cap = cv2.VideoCapture(temp_video)
@@ -549,7 +662,7 @@ def create_clip(video_path, clip, output_path, captions=True, bg_color=(255, 255
                             "start": max(0, word["start"] - start_time),
                             "end": min(duration, word["end"] - start_time)
                         })
-        
+
         # If no words found, use entire caption as fallback
         if not word_timings and clip.get("caption"):
             word_timings = [{
@@ -557,14 +670,17 @@ def create_clip(video_path, clip, output_path, captions=True, bg_color=(255, 255
                 "start": 0,
                 "end": duration
             }]
-            
-        font_path = "C:/Windows/Fonts/ARLRDBD.TTF"  # Adjust font path as needed
-        font = font_path if os.path.exists(font_path) else "arial.ttf"
+
+        font_path = get_font_path()
         # Now organize words into lines that fit on screen
         # Create a temporary PIL image to measure text size
         try:
-            font = ImageFont.truetype(font_path, 60)
-        except:
+            if font_path:
+                font = ImageFont.truetype(font_path, 60)
+            else:
+                font = ImageFont.load_default()
+        except Exception as e:
+            print(f"Warning: Could not load font, using default. Error: {e}")
             font = ImageFont.load_default()
             
         temp_img = Image.new('RGB', (1, 1))
@@ -717,11 +833,14 @@ def create_clip(video_path, clip, output_path, captions=True, bg_color=(255, 255
                 pil_img = cv2_to_pil(result)
                 draw = ImageDraw.Draw(pil_img)
 
-                font_path = "C:/Windows/Fonts/ARLRDBD.TTF"  # Adjust font path as needed
-                font = font_path if os.path.exists(font_path) else "arial.ttf"
+                font_path = get_font_path()
                 try:
-                    font = ImageFont.truetype(font_path, 60)
-                except:
+                    if font_path:
+                        font = ImageFont.truetype(font_path, 60)
+                    else:
+                        font = ImageFont.load_default()
+                except Exception as e:
+                    print(f"Warning: Could not load font, using default. Error: {e}")
                     font = ImageFont.load_default()
                 
                 # Display each active line
@@ -817,9 +936,11 @@ def create_clip(video_path, clip, output_path, captions=True, bg_color=(255, 255
     
     # Combine processed video with the audio from the extracted clip
     final_output = f"{output_path}"
-    combine_cmd = f"ffmpeg -i {output_path}_processed.mp4 -i {temp_video} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {final_output} -y"
+    combine_cmd = f"ffmpeg -i {quote_path(output_path + '_processed.mp4')} -i {quote_path(temp_video)} -c:v copy -map 0:v:0 -map 1:a:0 -shortest {quote_path(final_output)} -y"
     print(f"Adding audio: {combine_cmd}")
-    subprocess.call(combine_cmd, shell=True)
+    result = subprocess.call(combine_cmd, shell=True)
+    if result != 0:
+        print(f"Warning: FFmpeg audio combination returned code {result}")
     
     # Clean up temporary files
     if os.path.exists(temp_video):
@@ -847,19 +968,44 @@ def main():
     parser.add_argument("--api-key", help="API key for LLM service (optional)")
     parser.add_argument("--captions", action="store_true", help="Add captions to clips")
     parser.add_argument("--no-review", action="store_true", help="Skip clip review")
-    
+
     # Add new color customization arguments
     parser.add_argument("--bg-color", default="255,255,255,230", help="Background color for captions in R,G,B,A format (default: 255,255,255,230)")
     parser.add_argument("--highlight-color", default="255,226,165,220", help="Highlight color for active words in R,G,B,A format (default: 255,226,165,220)")
     parser.add_argument("--text-color", default="0,0,0", help="Text color in R,G,B format (default: 0,0,0)")
-    
+
     args = parser.parse_args()
-    
+
+    # Check dependencies first
+    print("Checking system dependencies...\n")
+    deps_ok, issues = check_dependencies()
+
+    if not deps_ok:
+        print("\n⚠ Warning: Some issues were found:")
+        for issue in issues:
+            print(f"  - {issue}")
+        print("\nThe script may not work correctly. Please fix the issues above.")
+
+        # Check if FFmpeg is missing (critical)
+        if any("FFmpeg is not installed" in issue for issue in issues):
+            print("\nFFmpeg is required to run this script. Exiting.")
+            return
+
+    print("\n" + "="*50 + "\n")
+
+    # Verify video file exists
+    if not os.path.exists(args.video_path):
+        print(f"ERROR: Video file not found: {args.video_path}")
+        print("Please check the path and try again.")
+        return
+
+    print(f"Processing video: {args.video_path}\n")
+
     # Parse color arguments to tuples
     bg_color = tuple(map(int, args.bg_color.split(',')))
     highlight_color = tuple(map(int, args.highlight_color.split(',')))
     text_color = tuple(map(int, args.text_color.split(',')))
-    
+
     # Create output directory
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
